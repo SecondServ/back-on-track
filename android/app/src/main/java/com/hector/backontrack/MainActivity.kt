@@ -16,6 +16,7 @@ import com.hector.backontrack.net.Api
 import com.hector.backontrack.net.Session
 import com.hector.backontrack.ui.MainScaffold
 import com.hector.backontrack.ui.LoginScreen
+import com.hector.backontrack.ui.UiScale
 import com.hector.backontrack.ui.theme.BackOnTrackTheme
 
 class MainActivity : ComponentActivity() {
@@ -24,6 +25,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         Api.appContext = applicationContext
 
+        UiScale.ensureLoaded(this)
         setContent {
             BackOnTrackTheme {
                 // null = 还在判断登录状态，避免闪一下登录页

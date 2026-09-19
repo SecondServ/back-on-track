@@ -107,13 +107,31 @@ private enum class TaskFilter(val label: String) {
 
 private fun priorityRank(p: String) = when (p) { "high" -> 2; "medium" -> 1; else -> 0 }
 
+/** 未完成待办怎么排。存的是 key，改了名字不会把用户已有的选择弄丢 */
+private enum class TaskSort(val key: String, val label: String) {
+    Priority("priority", "优先级"),
+    Newest("newest", "最新在前"),
+    Oldest("oldest", "最早在前");
+
+    companion object {
+        fun of(key: String) = entries.firstOrNull { it.key == key } ?: Priority
+    }
+}
+
 /**
- * 排序：先按优先级，同级里等得久的排前面。
+ * 默认按优先级，同级里等得久的排前面。
  * 不用截止时间当主序 —— 那样一堆没时间的待办会永远沉底，越拖越看不见。
+ *
+ * 另外两档只按新旧排，**不再掺优先级** —— 想看「最近记了啥」的时候
+ * 再拿优先级插一脚，顺序就不是他预期的那个了。
  */
-private fun sortTasks(list: List<Task>) = list.sortedWith(
-    compareByDescending<Task> { priorityRank(it.priority) }.thenBy { it.createdAt ?: "" }
-)
+private fun sortTasks(list: List<Task>, sort: TaskSort) = when (sort) {
+    TaskSort.Priority -> list.sortedWith(
+        compareByDescending<Task> { priorityRank(it.priority) }.thenBy { it.createdAt ?: "" }
+    )
+    TaskSort.Newest -> list.sortedByDescending { it.createdAt ?: "" }
+    TaskSort.Oldest -> list.sortedBy { it.createdAt ?: "" }
+}
 
 private val WEEKDAY = listOf("一", "二", "三", "四", "五", "六", "日")
 
@@ -146,6 +164,8 @@ fun TaskListScreen(
     var loading by remember { mutableStateOf(true) }
     var sheet by remember { mutableStateOf<SheetTarget?>(null) }
     var filter by remember { mutableStateOf(TaskFilter.All) }
+    var sort by remember { mutableStateOf(TaskSort.of(AppPrefs.taskSort(context))) }
+    var sortMenu by remember { mutableStateOf(false) }
     var recurOpen by remember { mutableStateOf(true) }
     // 循环待办最近几次是完成还是跳过
     var outcomes by remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
@@ -257,19 +277,47 @@ fun TaskListScreen(
             TaskFilter.All -> open
             TaskFilter.Reminding -> open.filter { it.wantsReminder }
             TaskFilter.High -> open.filter { it.priority == "high" }
-        }
+        },
+        sort,
     )
     val oneTime = shownOpen.filter { it.recurKind == null }
     val recurring = shownOpen.filter { it.recurKind != null }
 
     Column(modifier.fillMaxSize()) {
         if (open.isNotEmpty()) {
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                items(TaskFilter.entries.toList()) { f ->
-                    FilterChip(f == filter, { filter = f }, { Text(f.label) })
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                LazyRow(
+                    Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(TaskFilter.entries.toList()) { f ->
+                        FilterChip(f == filter, { filter = f }, { Text(f.label) })
+                    }
+                }
+                // 排序放在筛选同一行的最右边：它俩都是「怎么看这张列表」，
+                // 但排序是选一个、不常动，做成下拉比再摆三个 chip 省地方
+                Box {
+                    TextButton(onClick = { sortMenu = true }, Modifier.padding(end = 4.dp)) {
+                        Text(sort.label, style = MaterialTheme.typography.labelLarge)
+                        Text(" ▾", style = MaterialTheme.typography.labelLarge)
+                    }
+                    DropdownMenu(sortMenu, onDismissRequest = { sortMenu = false }) {
+                        TaskSort.entries.forEach { m ->
+                            DropdownMenuItem(
+                                text = { Text(m.label) },
+                                leadingIcon = {
+                                    // 用留白占位，选中项才画勾 —— 三行文字这样才对齐
+                                    Text(if (m == sort) "✓" else " ")
+                                },
+                                onClick = {
+                                    sort = m
+                                    AppPrefs.setTaskSort(context, m.key)
+                                    sortMenu = false
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }

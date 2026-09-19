@@ -9,6 +9,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.hector.backontrack.ui.UiScale
 import com.hector.backontrack.ui.theme.BackOnTrackTheme
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -32,6 +33,7 @@ class TaskPeekActivity : ComponentActivity() {
 
         if (row == null) { finish(); return }
 
+        UiScale.ensureLoaded(this)
         setContent {
             BackOnTrackTheme {
                 AlertDialog(

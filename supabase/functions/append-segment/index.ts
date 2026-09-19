@@ -6,7 +6,7 @@
 
 import { cleanText } from "../_shared/analysis.ts";
 import { transcribe, type AsrProvider } from "../_shared/asr.ts";
-import { asrHint, loadProfile } from "../_shared/profile.ts";
+import { asrHint, loadProfile, routeOf } from "../_shared/profile.ts";
 
 const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -58,10 +58,11 @@ Deno.serve(async (req) => {
       (Deno.env.get("ASR_PROVIDER") ?? "openai") as AsrProvider,
       Deno.env.get("ASR_API_KEY")!,
       asrHint(profile),
+      routeOf(profile),
     );
     if (!raw?.trim()) throw new Error("empty_transcript");
 
-    const cleaned = await cleanText(raw, profile?.body);
+    const cleaned = await cleanText(raw, profile?.body, routeOf(profile));
     await patchSegment({ final_text: raw, corrected_text: cleaned, asr_status: "done" });
 
     // 只把这一段存好并交还文字，**不改 captures 的正文**。

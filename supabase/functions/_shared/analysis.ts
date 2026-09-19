@@ -1,3 +1,4 @@
+import { callLLM } from "./llm.ts";
 // 一次调用完成：纠错 + 归类 + 结构化提取。
 // 不拆成三次串行 —— 延迟和成本都会翻倍。
 //
@@ -245,103 +246,26 @@ const userMsg = (transcript: string, now: string, tz: string, forcedKind?: strin
 
 // ── 两条通路 ──────────────────────────────────────────────────────────────
 
-async function viaOpenAI(
-  // sys 必须从外面传进来：它含用户档案，是每次调用都不一样的。
-  // 早先这里直接用模块级的 SYSTEM，加档案时就漏改了这两个函数。
-  transcript: string, now: string, tz: string, sys: string,
-  key: string, model: string,
-  forcedKind?: string,
-): Promise<string> {
-  const r = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      input: [
-        { role: "system", content: sys },
-        { role: "user", content: userMsg(transcript, now, tz, forcedKind) },
-      ],
-      text: {
-        format: {
-          type: "json_schema", name: "capture_analysis",
-          strict: true, schema: SCHEMA,
-        },
-      },
-    }),
-  });
-  if (!r.ok) throw new Error(`openai llm ${r.status}: ${await r.text()}`);
-  const j = await r.json();
-
-  for (const item of j.output ?? []) {
-    for (const c of item.content ?? []) {
-      if (c.type === "refusal") throw new Error(`model_refused: ${c.refusal}`);
-      if (c.type === "output_text") return c.text;
-    }
-  }
-  throw new Error(`no_output_text: ${JSON.stringify(j).slice(0, 400)}`);
-}
-
-async function viaAnthropic(
-  transcript: string, now: string, tz: string, sys: string,
-  key: string, model: string,
-  forcedKind?: string,
-): Promise<string> {
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 8000,
-      system: sys,
-      output_config: {
-        effort: "low",
-        format: { type: "json_schema", schema: SCHEMA },
-      },
-      messages: [{ role: "user", content: userMsg(transcript, now, tz, forcedKind) }],
-    }),
-  });
-  if (!r.ok) throw new Error(`anthropic llm ${r.status}: ${await r.text()}`);
-  const j = await r.json();
-  if (j.stop_reason === "refusal") throw new Error("model_refused");
-  const block = (j.content ?? []).find((b: { type: string }) => b.type === "text");
-  if (!block) throw new Error("no_text_block");
-  return block.text;
-}
-
-// ── 对外接口 ──────────────────────────────────────────────────────────────
-
 export async function analyze(opts: {
   transcript: string;
   now: string;       // ISO8601
   tz: string;        // IANA，如 America/Los_Angeles
   forcedKind?: string; // 用户手动指定的分类，AI 不得覆盖
   profile?: string;    // 用户档案正文，背景知识
+  route?: string;      // 走哪条线路（default / china）
 }): Promise<Analysis> {
   const provider = Deno.env.get("LLM_PROVIDER") ?? "openai";
-  const { transcript, now, tz, forcedKind, profile } = opts;
+  const { transcript, now, tz, forcedKind, profile, route } = opts;
   const sys = withProfile(SYSTEM, profile);
 
-  let raw: string;
-  if (provider === "anthropic") {
-    raw = await viaAnthropic(
-      transcript, now, tz, sys,
-      Deno.env.get("ANTHROPIC_API_KEY")!,
-      Deno.env.get("LLM_MODEL") ?? "claude-opus-5",
-      forcedKind,
-    );
-  } else {
-    raw = await viaOpenAI(
-      transcript, now, tz, sys,
-      // 默认复用 ASR 的 key —— 同一个 OpenAI 账号，不用配两遍
-      Deno.env.get("LLM_API_KEY") ?? Deno.env.get("ASR_API_KEY")!,
-      Deno.env.get("LLM_MODEL") ?? "gpt-5.6-terra",
-      forcedKind,
-    );
-  }
+  const raw = await callLLM({
+    system: sys,
+    user: userMsg(transcript, now, tz, forcedKind),
+    schema: SCHEMA,
+    schemaName: "capture_analysis",
+    maxTokens: 8000,
+    route,
+  });
 
   const parsed = JSON.parse(raw) as Analysis;
 
@@ -432,53 +356,14 @@ export function keepCleanedOrRaw(raw: string, cleaned: string): string {
 }
 
 export async function cleanText(
-  transcript: string, profile?: string,
+  transcript: string, profile?: string, route?: string,
 ): Promise<string> {
-  const provider = Deno.env.get("LLM_PROVIDER") ?? "openai";
-  const sys = withProfile(CLEAN_SYSTEM, profile);
-
-  if (provider === "anthropic") {
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": Deno.env.get("ANTHROPIC_API_KEY")!,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: Deno.env.get("LLM_MODEL") ?? "claude-opus-5",
-        max_tokens: 2000,
-        system: sys,
-        messages: [{ role: "user", content: `<转写>\n${transcript}\n</转写>` }],
-      }),
-    });
-    if (!r.ok) throw new Error(`anthropic clean ${r.status}: ${await r.text()}`);
-    const j = await r.json();
-    const b = (j.content ?? []).find((x: { type: string }) => x.type === "text");
-    return keepCleanedOrRaw(transcript, b?.text ?? "");
-  }
-
-  const r = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${Deno.env.get("LLM_API_KEY") ?? Deno.env.get("ASR_API_KEY")!}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: Deno.env.get("LLM_MODEL") ?? "gpt-5.6-terra",
-      input: [
-        { role: "system", content: sys },
-        { role: "user", content: `<转写>\n${transcript}\n</转写>` },
-      ],
-    }),
+  const cleaned = await callLLM({
+    system: withProfile(CLEAN_SYSTEM, profile),
+    user: `<转写>\n${transcript}\n</转写>`,
+    maxTokens: 2000,
+    route,
   });
-  if (!r.ok) throw new Error(`openai clean ${r.status}: ${await r.text()}`);
-  const j = await r.json();
-  for (const item of j.output ?? []) {
-    for (const c of item.content ?? []) {
-      if (c.type === "output_text") return keepCleanedOrRaw(transcript, c.text as string);
-    }
-  }
-  // 清洗失败就退回原文 —— 有原文总比没有强
-  return transcript;
+  return keepCleanedOrRaw(transcript, cleaned);
 }
+

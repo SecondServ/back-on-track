@@ -9,7 +9,7 @@
 
 import { analyze } from "../_shared/analysis.ts";
 import { transcribe, type AsrProvider } from "../_shared/asr.ts";
-import { asrHint, loadProfile } from "../_shared/profile.ts";
+import { asrHint, loadProfile, routeOf } from "../_shared/profile.ts";
 import { planReminders } from "../_shared/reminders.ts";
 import { dateLabel, formatMeal, localDateIso } from "../_shared/meal.ts";
 import type { MealEntry } from "../_shared/meal.ts";
@@ -78,6 +78,7 @@ Deno.serve(async (req) => {
         (Deno.env.get("ASR_PROVIDER") ?? "openai") as AsrProvider,
         Deno.env.get("ASR_API_KEY")!,
         asrHint(profile),
+        routeOf(profile),
       );
       mark(`转录完成 ${transcript.length} 字`);
     }
@@ -95,6 +96,7 @@ Deno.serve(async (req) => {
     const a = await analyze({
       transcript, now: new Date().toISOString(), tz, forcedKind,
       profile: profile?.body,
+      route: routeOf(profile),
     });
     mark("分析完成");
 

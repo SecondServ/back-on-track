@@ -9,7 +9,12 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
+import com.hector.backontrack.ui.UiScale
 
 private val DarkColorScheme = darkColorScheme(
     primary = Purple80,
@@ -50,9 +55,18 @@ fun BackOnTrackTheme(
         else -> LightColorScheme
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
+    // 整体缩放：只动 density，dp 和 sp 就一起缩了，版式比例不变。
+    // fontScale 原样留着 —— 那是系统的「字体大小」无障碍设置，不该被我们覆盖
+    val base = LocalDensity.current
+    val scaled = remember(base, UiScale.value) {
+        Density(base.density * UiScale.value, base.fontScale)
+    }
+
+    CompositionLocalProvider(LocalDensity provides scaled) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = Typography,
+            content = content
+        )
+    }
 }

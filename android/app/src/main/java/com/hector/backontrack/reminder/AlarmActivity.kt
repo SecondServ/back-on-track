@@ -20,6 +20,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.hector.backontrack.net.Api
 import com.hector.backontrack.net.Session
+import com.hector.backontrack.ui.UiScale
 import com.hector.backontrack.ui.theme.BackOnTrackTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,6 +56,7 @@ class AlarmActivity : ComponentActivity() {
 
         startAlarmSound()
 
+        UiScale.ensureLoaded(this)
         setContent {
             BackOnTrackTheme {
                 // 跟随主题，不再用 errorContainer（那是 Material 的「出错」红，

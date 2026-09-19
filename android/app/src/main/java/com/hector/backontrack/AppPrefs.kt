@@ -12,6 +12,8 @@ object AppPrefs {
     private const val KEY_NUDGE_LAST = "nudge_last_at"
     private const val KEY_DEEP_THINK = "deep_think"
     private const val KEY_AI_PROVIDER = "ai_provider"
+    private const val KEY_TASK_SORT = "task_sort"
+    private const val KEY_UI_SCALE = "ui_scale"
 
     /** 已完成的待办只显示这么多天内的 —— 再久远的划线条目只会把列表拉长，没有回看价值 */
     const val DONE_KEEP_DAYS = 30
@@ -67,6 +69,24 @@ object AppPrefs {
 
     fun setAiProvider(ctx: Context, provider: String) =
         prefs(ctx).edit().putString(KEY_AI_PROVIDER, provider).apply()
+
+    /**
+     * 未完成待办怎么排。默认 priority —— 见 TaskListScreen 里那段注释：
+     * 拿截止时间当主序会让没时间的待办永远沉底。
+     */
+    fun taskSort(ctx: Context): String = prefs(ctx).getString(KEY_TASK_SORT, "priority")!!
+
+    fun setTaskSort(ctx: Context, mode: String) =
+        prefs(ctx).edit().putString(KEY_TASK_SORT, mode).apply()
+
+    /**
+     * 整体缩放。**只存本机、不同步** —— 大屏手机上同样的 dp 画出来就是显得肥，
+     * 这是每台设备各自的事，跟着账号走反而添乱。
+     */
+    fun uiScale(ctx: Context): Float = prefs(ctx).getFloat(KEY_UI_SCALE, 1f)
+
+    fun setUiScale(ctx: Context, scale: Float) =
+        prefs(ctx).edit().putFloat(KEY_UI_SCALE, scale).apply()
 
     fun captureSortDesc(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_SORT_DESC, true)
 

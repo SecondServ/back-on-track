@@ -970,6 +970,28 @@ object Api {
         else request("/rest/v1/user_profile", "PATCH", json)
     }
 
+    /**
+     * 服务端调模型走哪条线路：default = OpenAI（转写 Whisper，整理/问答 GPT，能联网搜）；
+     * china = DeepSeek + 硅基流动（不能联网搜）。
+     *
+     * 存在服务端而不是本机：真正照它挑模型的是 edge function，
+     * 客户端只是个遥控器；换手机、重装都跟着账号走。
+     */
+    suspend fun getAiRoute(): String {
+        val arr = JSONArray(request("/rest/v1/user_profile?select=ai_route&limit=1", "GET"))
+        if (arr.length() == 0) return "default"
+        val o = arr.getJSONObject(0)
+        return if (o.isNull("ai_route")) "default" else o.getString("ai_route")
+    }
+
+    suspend fun setAiRoute(route: String) {
+        val json = JSONObject().put("ai_route", route).toString().toByteArray()
+        // 还没建过档案的话得先插一行，否则 PATCH 改不到任何东西、还会静默成功
+        val arr = JSONArray(request("/rest/v1/user_profile?select=ai_route&limit=1", "GET"))
+        if (arr.length() == 0) request("/rest/v1/user_profile", "POST", json)
+        else request("/rest/v1/user_profile", "PATCH", json)
+    }
+
     /** 下载音频用于回放 */
     suspend fun downloadAudio(objectPath: String, dest: File) = withContext(Dispatchers.IO) {
         val c = open("/storage/v1/object/${Config.AUDIO_BUCKET}/$objectPath", "GET", null)

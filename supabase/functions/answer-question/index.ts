@@ -4,13 +4,14 @@
 // 这里是「回答一个问题」——目标不同，prompt 也不该混在一起。
 //
 // 每次都把整条对话带上，所以 AI 记得前面聊过什么，可以一问一答地追问。
-import { loadProfile } from "../_shared/profile.ts";
+import { loadProfile, routeOf } from "../_shared/profile.ts";
+import { callLLM, llmProvider, supportsWeb } from "../_shared/llm.ts";
 
 const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
 // 用的是哪家的 key。客户端拿不到这个信息（key 只在服务端），
 // 但它要照这个挑 AI 头像，所以每次回答都把它一起回报。
-const PROVIDER = Deno.env.get("LLM_PROVIDER") ?? "openai";
+const PROVIDER = llmProvider();   // 仅用于日志；实际按用户线路走
 
 const SYSTEM = `你在回答一个人随口问出的问题。他中英文混说，问题往往不完整、口语化。
 
@@ -54,7 +55,7 @@ Deno.serve(async (req) => {
     : SYSTEM;
 
   try {
-    const answer = await ask(system, turns, deep === true);
+    const answer = await ask(system, turns, deep === true, routeOf(profile));
     if (!answer.trim()) throw new Error("empty_answer");
 
     const ins = await fetch(`${SUPA_URL}/rest/v1/qa_turns`, {
@@ -77,68 +78,19 @@ Deno.serve(async (req) => {
   }
 });
 
-/** 跟 _shared/analysis.ts 里的清洗调用同构：同一套 provider 开关和环境变量 */
 async function ask(
   system: string, turns: { role: string; text: string }[], deep: boolean,
+  route: string,
 ): Promise<string> {
-  if (PROVIDER === "anthropic") {
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": Deno.env.get("ANTHROPIC_API_KEY")!,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: Deno.env.get("LLM_MODEL") ?? "claude-opus-5",
-        // 开思考时 max_tokens 必须大于思考预算，否则正文没地方写
-        max_tokens: deep ? 8000 : 2000,
-        ...(deep ? { thinking: { type: "enabled", budget_tokens: 4000 } } : {}),
-        system,
-        messages: turns.map((t) => ({
-          role: t.role === "assistant" ? "assistant" : "user",
-          content: t.text,
-        })),
-      }),
-    });
-    if (!r.ok) throw new Error(`anthropic ask ${r.status}: ${await r.text()}`);
-    const j = await r.json();
-    const b = (j.content ?? []).find((x: { type: string }) => x.type === "text");
-    return b?.text ?? "";
-  }
-
-  const r = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${Deno.env.get("LLM_API_KEY") ?? Deno.env.get("ASR_API_KEY")!}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: Deno.env.get("LLM_MODEL") ?? "gpt-5.6-terra",
-      // 联网。没有它，模型只能凭训练时的记忆答「最新款是哪个」这类问题，
-      // 而这个功能的目标就是「像 ChatGPT 那样问什么答什么」。
-      tools: [{ type: "web_search" }],
-      // 默认低推理档：这是随口一问的对话，不是解题。
-      // 高档位会思考很久，等回答的那几十秒足以让人不想再用 ——
-      // 所以「想深一点」做成用户按需打开的开关，而不是默认代价。
-      reasoning: { effort: deep ? "high" : "low" },
-      input: [
-        { role: "system", content: system },
-        ...turns.map((t) => ({
-          role: t.role === "assistant" ? "assistant" : "user",
-          content: t.text,
-        })),
-      ],
-    }),
+  return await callLLM({
+    system,
+    route,
+    turns: turns.map((t) => ({ role: t.role, content: t.text })),
+    // 联网只有 OpenAI 那条通路有。换成别家时这里自动降级成「凭模型自己的知识答」
+    web: supportsWeb(route),
+    effort: deep ? "high" : "low",
+    maxTokens: deep ? 8000 : 2000,
   });
-  if (!r.ok) throw new Error(`openai ask ${r.status}: ${await r.text()}`);
-  const j = await r.json();
-  for (const item of j.output ?? []) {
-    for (const c of item.content ?? []) {
-      if (c.type === "output_text") return c.text as string;
-    }
-  }
-  throw new Error(`no_output_text: ${JSON.stringify(j).slice(0, 300)}`);
 }
 
 function json(body: unknown, status = 200) {

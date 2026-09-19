@@ -6,7 +6,12 @@
 // 「张三」「Foster City」这类词在 ASR 那一步就听错了，
 // 后面的 LLM 看不到音频，只能顺着错字猜，补不回来 —— 所以必须在 ASR 就给提示。
 
-export type Profile = { body: string; glossary: string[] };
+export type Profile = {
+  body: string;
+  glossary: string[];
+  /** 用哪条线路跑 AI：default = OpenAI，china = DeepSeek + 硅基流动 */
+  route: string;
+};
 
 /** 读当前用户的档案。没建过、或读失败都返回 null，绝不因此让整条管线失败 */
 export async function loadProfile(
@@ -14,11 +19,17 @@ export async function loadProfile(
 ): Promise<Profile | null> {
   try {
     const r = await fetch(
-      `${supaUrl}/rest/v1/user_profile?select=body,glossary&limit=1`, { headers });
+      `${supaUrl}/rest/v1/user_profile?select=body,glossary,ai_route&limit=1`,
+      { headers },
+    );
     if (!r.ok) return null;
     const [row] = await r.json();
     if (!row) return null;
-    return { body: row.body ?? "", glossary: row.glossary ?? [] };
+    return {
+      body: row.body ?? "",
+      glossary: row.glossary ?? [],
+      route: row.ai_route ?? "default",
+    };
   } catch {
     return null;
   }
@@ -30,6 +41,11 @@ export async function loadProfile(
  * Whisper 系的 prompt 是「假装这是上一段的转写」，所以写成自然句子比堆词表管用。
  * 留足余量截断：宁可少给几个词，也不要整段被平台悄悄切掉。
  */
+/** 没建过档案也得有条线路可走 */
+export function routeOf(p: Profile | null): string {
+  return p?.route ?? "default";
+}
+
 export function asrHint(p: Profile | null): string | undefined {
   const words = (p?.glossary ?? []).map((w) => w.trim()).filter(Boolean);
   if (!words.length) return undefined;

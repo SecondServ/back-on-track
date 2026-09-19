@@ -5,11 +5,12 @@
 //
 // 跟 answer-question 的区别：那边是一问一答的独立对话；
 // 这边每次都以**这条笔记的正文**为上下文，产出挂在这条笔记名下。
-import { loadProfile } from "../_shared/profile.ts";
+import { loadProfile, routeOf } from "../_shared/profile.ts";
+import { callLLM, llmProvider, supportsWeb } from "../_shared/llm.ts";
 
 const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
-const PROVIDER = Deno.env.get("LLM_PROVIDER") ?? "openai";
+const PROVIDER = llmProvider();
 
 const SYSTEM = `你在帮一个人处理他自己记下的笔记。
 
@@ -173,7 +174,7 @@ Deno.serve(async (req) => {
     `<笔记>\n${note}\n</笔记>${history}\n\n<指令>\n${promptText}\n</指令>`;
 
   try {
-    const text = (await run(system, userMsg, needsWeb)).trim();
+    const text = (await run(system, userMsg, needsWeb, routeOf(profile))).trim();
     if (!text) throw new Error("empty_result");
 
     const ins = await fetch(`${SUPA_URL}/rest/v1/note_outputs`, {
@@ -205,53 +206,14 @@ Deno.serve(async (req) => {
   }
 });
 
-async function run(system: string, user: string, web: boolean): Promise<string> {
-  if (PROVIDER === "anthropic") {
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": Deno.env.get("ANTHROPIC_API_KEY")!,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: Deno.env.get("LLM_MODEL") ?? "claude-opus-5",
-        max_tokens: 4000,
-        system,
-        messages: [{ role: "user", content: user }],
-      }),
-    });
-    if (!r.ok) throw new Error(`anthropic command ${r.status}: ${await r.text()}`);
-    const j = await r.json();
-    return (j.content ?? []).find((x: { type: string }) => x.type === "text")?.text ?? "";
-  }
-
-  const r = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${Deno.env.get("LLM_API_KEY") ?? Deno.env.get("ASR_API_KEY")!}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: Deno.env.get("LLM_MODEL") ?? "gpt-5.6-terra",
-      // 只在需要时开联网：调研类全靠它，但纯文本加工开着会跑题
-      ...(web ? { tools: [{ type: "web_search" }] } : {}),
-      // 加工文字用不上深思考；调研类的成本主要在搜索，不在推理档位
-      reasoning: { effort: "low" },
-      input: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-    }),
+async function run(
+  system: string, user: string, web: boolean, route: string,
+): Promise<string> {
+  return await callLLM({
+    system, user, route,
+    web: web && supportsWeb(route),
+    maxTokens: 4000,
   });
-  if (!r.ok) throw new Error(`openai command ${r.status}: ${await r.text()}`);
-  const j = await r.json();
-  for (const item of j.output ?? []) {
-    for (const c of item.content ?? []) {
-      if (c.type === "output_text") return c.text as string;
-    }
-  }
-  throw new Error(`no_output_text: ${JSON.stringify(j).slice(0, 200)}`);
 }
 
 function json(body: unknown, status = 200) {

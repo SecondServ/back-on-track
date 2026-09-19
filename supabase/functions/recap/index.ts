@@ -6,11 +6,12 @@
 //
 // 结果缓存在 recaps 表里（见 0020 迁移）：这个页面是拿来每天看一眼的，
 // 每次都重算等于每天为同一个月付一次钱。
-import { loadProfile } from "../_shared/profile.ts";
+import { loadProfile, routeOf } from "../_shared/profile.ts";
+import { callLLM, llmProvider, supportsWeb } from "../_shared/llm.ts";
 
 const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
-const PROVIDER = Deno.env.get("LLM_PROVIDER") ?? "openai";
+const PROVIDER = llmProvider();
 
 /** 日记永远不进回顾 —— 它是加锁的，回顾页可没有那道锁 */
 const IDEA_KINDS = ["idea", "content", "memo", "note"];
@@ -56,9 +57,12 @@ Deno.serve(async (req) => {
   const end = new Date(Date.UTC(y, m, 1) - off * 60_000).toISOString();
 
   try {
+    // 用户在 App 里选的线路（默认 / 中国）。回顾这几段全是模型活儿，
+    // 不跟着走的话他在国内切了线路、回顾页还是在打 OpenAI
+    const route = routeOf(await loadProfile(SUPA_URL, H));
     const data = section === "tasks"
-      ? await tasksRecap(H, start, end, off)
-      : await notesRecap(H, start, end, section, off);
+      ? await tasksRecap(H, start, end, off, route)
+      : await notesRecap(H, start, end, section, off, route);
 
     await fetch(`${SUPA_URL}/rest/v1/recaps?on_conflict=user_id,month,section`, {
       method: "POST",
@@ -98,6 +102,7 @@ function byDay(dates: string[], off: number, start: string, end: string) {
 
 async function tasksRecap(
   H: Record<string, string>, start: string, end: string, off: number,
+  route: string,
 ) {
   const q = (f: string) =>
     fetch(`${SUPA_URL}/rest/v1/tasks?${f}&deleted_at=is.null&select=title,status,completed_at,created_at,due_at,priority&limit=500`,
@@ -179,6 +184,7 @@ async function tasksRecap(
         nudge: { type: "string", description: "提醒还拖着的那几件；没有就留空" },
       },
     },
+    false, route,
   );
 
   // 画图用的数字全在这儿算好 —— 让模型报数字迟早会错一次，而且错得不声不响
@@ -205,6 +211,7 @@ async function tasksRecap(
 
 async function notesRecap(
   H: Record<string, string>, start: string, end: string, section: string, off: number,
+  route: string,
 ) {
   const kinds = section === "meal" ? ["meal"] : IDEA_KINDS;
   const inList = kinds.map((k) => `"${k}"`).join(",");
@@ -356,6 +363,7 @@ async function notesRecap(
           },
         },
       },
+      false, route,
     );
     // 日均只除以**有记录的天数**：没记录的那天不是「吃了 0 卡」，是「不知道」。
     // 除以整月天数会得出一个没有意义的低数字，看着还挺好看 —— 那种数字最误导人
@@ -422,7 +430,7 @@ async function notesRecap(
         questions: { type: "string" },
       },
     },
-    true,   // 联网
+    true, route,   // 联网
   );
   const byKind: Record<string, number> = {};
   for (const x of rows) {
@@ -435,56 +443,18 @@ async function notesRecap(
 // ── 模型调用 ─────────────────────────────────────────────────────────────
 
 async function ask(
-  system: string, user: string, schema: Record<string, unknown>, web = false,
+  system: string, user: string, schema: Record<string, unknown>,
+  web = false, route = "default",
 ): Promise<Record<string, unknown>> {
-  if (PROVIDER === "anthropic") {
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": Deno.env.get("ANTHROPIC_API_KEY")!,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: Deno.env.get("LLM_MODEL") ?? "claude-opus-5",
-        max_tokens: 4000,
-        system: `${system}\n\n只输出一个 JSON 对象，符合这个结构：${JSON.stringify(schema)}`,
-        messages: [{ role: "user", content: user }],
-      }),
-    });
-    if (!r.ok) throw new Error(`anthropic recap ${r.status}: ${await r.text()}`);
-    const j = await r.json();
-    const t = (j.content ?? []).find((x: { type: string }) => x.type === "text")?.text ?? "{}";
-    return JSON.parse(t.replace(/^```json\s*|```$/g, "").trim());
-  }
-
-  const r = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${Deno.env.get("LLM_API_KEY") ?? Deno.env.get("ASR_API_KEY")!}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: Deno.env.get("LLM_MODEL") ?? "gpt-5.6-terra",
-      reasoning: { effort: "low" },
-      // 资讯页离了联网就只能凭记忆编链接 —— 那还不如不做
-      ...(web ? { tools: [{ type: "web_search" }] } : {}),
-      input: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      text: { format: { type: "json_schema", name: "recap", strict: true, schema } },
-    }),
+  const raw = await callLLM({
+    system, user, schema, schemaName: "recap", route,
+    // 联网只有 OpenAI 有；换别家时资讯页会退化成「凭模型记忆推荐」，
+    // 所以那边的提示词也要跟着松口，别再许诺「我去搜」
+    web: web && supportsWeb(route),
+    effort: "low",
+    maxTokens: 6000,
   });
-  if (!r.ok) throw new Error(`openai recap ${r.status}: ${await r.text()}`);
-  const j = await r.json();
-  for (const item of j.output ?? []) {
-    for (const c of item.content ?? []) {
-      if (c.type === "refusal") throw new Error(`model_refused: ${c.refusal}`);
-      if (c.type === "output_text") return JSON.parse(c.text);
-    }
-  }
-  throw new Error(`no_output_text: ${JSON.stringify(j).slice(0, 200)}`);
+  return JSON.parse(raw);
 }
 
 function json(body: unknown, status = 200) {
