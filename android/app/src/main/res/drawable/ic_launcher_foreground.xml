@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 话筒。这个 App 的入口只有一个动作：按住说话，所以图标就画那个动作。
+     自适应图标的安全区是中心直径 66 的圆，所有笔画都收在 (54,54) 周围 ±26 以内，
+     被裁成圆形也不会切到。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 话筒本体：上下各一个半圆的胶囊 -->
+    <path
+        android:fillColor="#E8F3E2"
+        android:pathData="M44,42 A10,10 0 0 1 64,42 L64,54 A10,10 0 0 1 44,54 Z" />
+
+    <!-- 下面托着的弧 + 支架，描边不是填充 -->
+    <path
+        android:strokeColor="#E8F3E2"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M37,54 A17,17 0 0 0 71,54" />
+    <path
+        android:strokeColor="#E8F3E2"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M54,71 L54,79" />
+</vector>

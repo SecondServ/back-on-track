@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 底部「回顾」：柱状图，跟那一页里真正画的东西对得上 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFF" android:pathData="M4,13h3v7H4z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M10.5,8h3v12h-3z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M17,4h3v16h-3z"/>
+</vector>

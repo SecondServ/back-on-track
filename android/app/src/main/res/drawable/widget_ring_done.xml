@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 已完成：实心圈，对勾是「挖空」出来的。
+     关键在 evenOdd：对勾作为圆内的第二条闭合路径，会被挖成透明洞，
+     透出小组件底色。必须这么做 —— 条目会按优先级套 setColorFilter，
+     而 PorterDuff SRC_IN 会把所有不透明像素统统染成同一个颜色；
+     如果对勾是描出来的线，它会跟圆盘染成一模一样的色，直接消失。
+     挖成洞就不怕染：洞是透明的，染不上。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M12,3 a9,9 0 1,0 0.01,0 z M7.4,12.2 L10.4,15.3 L16.5,8.9 L18.1,10.4 L10.4,18.4 L5.8,13.7 Z" />
+</vector>

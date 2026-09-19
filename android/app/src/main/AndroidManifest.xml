@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 监听网络恢复，好把离线期间攒下的录音补传上去 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 日记加锁用系统的指纹/手机密码验证。普通权限，不弹运行时授权框 -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+
+    <!-- 精确闹钟：递进式提醒必须准点，差半小时就失去意义。
+         USE_EXACT_ALARM 自动授予（本应用核心功能就是提醒），
+         SCHEDULE_EXACT_ALARM 作为需要用户手动授权时的退路。 -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- 重启后重建闹钟 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 引导用户把本应用移出电池优化，否则 Doze 会吞掉提醒 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- deadline 正点的全屏闹钟（像来电那样盖住屏幕） -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- 夜里重算回顾要跑一两分钟，广播接收器的十秒预算不够，得走前台服务 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <application
+        android:name=".App"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.BackOnTrack">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.BackOnTrack"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".reminder.AlarmActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:excludeFromRecents="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.BackOnTrack" />
+
+        <!-- 闹钟到点 -->
+        <!-- 每晚 23:59 重算三张看板，第二天早上打开就是现成的 -->
+        <receiver
+            android:name=".reminder.RecapScheduler$RecapReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".reminder.ReminderReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.hector.backontrack.FIRE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 开机 / 应用更新后重建闹钟 -->
+        <receiver
+            android:name=".reminder.BootReceiver"
+            android:exported="true"
+            android:directBootAware="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+        <receiver
+            android:name=".reminder.NudgeReceiver"
+            android:exported="false" />
+
+        <!-- 桌面小组件。exported=false：系统是按组件名直接投递的，不用对外开放 -->
+        <receiver
+            android:name=".widget.TasksWidget"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_tasks_info" />
+        </receiver>
+
+        <!-- 点小组件上的文字弹出的详情，只读 -->
+        <activity
+            android:name=".widget.TaskPeekActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <service
+            android:name=".reminder.RecapService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
+        <!-- ListView 的数据源。BIND_REMOTEVIEWS 保证只有系统能绑它 -->
+        <service
+            android:name=".widget.TasksWidgetService"
+            android:permission="android.permission.BIND_REMOTEVIEWS"
+            android:exported="false" />
+
+    </application>
+
+</manifest>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 容器半透明：压在壁纸上透出一点底色，才不像贴上去的一块板。
+     代价是不再跟随壁纸取色（Material You 的 system_* 不能直接加透明度）。
+
+     深浅两套都遵循同一条：**行条要跟文字拉开对比，外层容器退到后面去**。
+     浅色下字是深的，所以行条给纯白、外层给浅灰；
+     深色下字是浅的，所以行条压到近黑、外层给中灰。两边都是行条最「干净」。 -->
+<resources>
+    <color name="widget_bg">#CCDADADE</color>
+    <color name="widget_row">#FFFFFFFF</color>
+    <color name="widget_text">@android:color/system_neutral1_900</color>
+    <color name="widget_text_dim">@android:color/system_neutral2_700</color>
+    <!-- 按键保持实色：它是唯一进 App 说话的入口，得一眼看见。
+         跟随壁纸取色（Material You），跟 App 里那个「按住」键同一套绿 -->
+    <color name="widget_btn">@android:color/system_accent1_600</color>
+    <color name="widget_btn_text">@android:color/system_accent1_0</color>
+    <!-- 优先级圆点。深浅模式共用，靠色相区分而不是明度 -->
+    <color name="widget_p_high">#E5734F</color>
+    <color name="widget_p_med">#E0A93C</color>
+    <color name="widget_p_low">#7FA88C</color>
+</resources>

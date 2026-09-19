@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- updatePeriodMillis=0：不让系统定时刷。
+     数据来自本地缓存，App 每次拉完待办会主动通知小组件刷新，
+     系统那套最快也要 30 分钟一次，纯属白耗电。 -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/widget_tasks"
+    android:previewLayout="@layout/widget_tasks"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen" />

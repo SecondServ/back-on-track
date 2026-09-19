@@ -1,0 +1,16 @@
+<!-- 通知小图标必须是单色、透明背景的矢量图。
+     用 mipmap 里的启动图标（自适应图标 XML）会渲染失败，
+     而且是静默失败 —— 通知直接不显示，日志里什么都没有。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,2C10.34,2 9,3.34 9,5v6c0,1.66 1.34,3 3,3s3,-1.34 3,-3V5C15,3.34 13.66,2 12,2z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M17,11c0,2.76 -2.24,5 -5,5s-5,-2.24 -5,-5H5c0,3.53 2.61,6.43 6,6.92V21h2v-3.08c3.39,-0.49 6,-3.39 6,-6.92H17z"/>
+</vector>

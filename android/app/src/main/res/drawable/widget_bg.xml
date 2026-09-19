@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/widget_bg" />
+    <!-- 用系统给的小组件圆角，跟桌面上其它小组件对齐；写死 20dp 会显得方一截 -->
+    <corners android:radius="@android:dimen/system_app_widget_background_radius" />
+</shape>

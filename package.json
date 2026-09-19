@@ -1,0 +1,16 @@
+{
+  "name": "back-on-track",
+  "version": "1.0.0",
+  "description": "语音进，结构化出。想到什么直接说，AI 负责归类、提取、提醒。",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "supabase": "^2.117.0"
+  },
+  "private": true
+}

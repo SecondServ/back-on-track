@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/item_root"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:background="@drawable/widget_item_bg"
+    android:layout_marginBottom="4dp"
+    android:paddingStart="12dp"
+    android:paddingEnd="12dp"
+    android:paddingTop="4dp"
+    android:paddingBottom="4dp">
+
+    <!-- 圈单独是一个点击区：只有点它才会改完成状态。
+         做大到 24dp 并留出右侧间距，手指够得着也不容易蹭到文字。 -->
+    <!-- 可点区域 34dp，但靠 padding 把圆圈画小到 20dp 左右。
+         之前是「控件多大、靶子就多大」，21dp 的圈拇指根本点不准 ——
+         放大控件、缩小图形，看起来没变、却好点得多 -->
+    <ImageView
+        android:id="@+id/item_dot"
+        android:layout_width="34dp"
+        android:layout_height="34dp"
+        android:padding="7dp"
+        android:scaleType="fitCenter"
+        android:layout_marginEnd="6dp"
+        android:src="@drawable/widget_ring_open"
+        android:contentDescription="标记完成" />
+
+    <TextView
+        android:id="@+id/item_title"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:textSize="15sp"
+        android:textColor="@color/widget_text"
+        android:maxLines="1"
+        android:ellipsize="end" />
+
+    <TextView
+        android:id="@+id/item_age"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:paddingStart="10dp"
+        android:textSize="13sp"
+        android:textColor="@color/widget_text_dim" />
+</LinearLayout>
