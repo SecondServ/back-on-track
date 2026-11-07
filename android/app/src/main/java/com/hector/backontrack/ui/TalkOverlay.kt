@@ -23,6 +23,7 @@ import com.hector.backontrack.audio.PendingQueue
 import com.hector.backontrack.audio.Recorder
 import com.hector.backontrack.net.Api
 import com.hector.backontrack.reminder.ReminderScheduler
+import com.hector.backontrack.net.Uploader
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -141,8 +142,16 @@ fun BoxScope.TalkOverlay(
                 if (!uploaded && PendingQueue.enqueue(context, file, durationMs, action.forcedKind)) {
                     // 没传上去，多半是没网。录音必须留住 ——
                     // 在地铁里说的那句话，不该因为没信号就消失。
-                    onStatus("没网，已存在本地，联网后自动补传")
+                    onStatus("没传上去，录音已存在手机里，稍后自动补传")
                     onCaptureCreated()
+                    // 不一定是没网（比如登录票刚好过期被拒）。过几秒自己再试一次，
+                    // 不用等下次开 App 或者网络切换
+                    scope.launch {
+                        delay(3000)
+                        val n = try { Uploader.flushPending(context) { onCaptureCreated() } }
+                                catch (_: Exception) { 0 }
+                        if (n > 0) { onCaptureUpdated(); onStatus("补传成功") }
+                    }
                 } else {
                     onStatus("处理失败：${e.message?.take(160)}")
                 }

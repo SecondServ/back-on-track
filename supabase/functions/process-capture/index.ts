@@ -126,6 +126,15 @@ Deno.serve(async (req) => {
       ...(forcedKind ? {} : { kind: a.kind, kind_confidence: a.kind_confidence }),
     });
 
+    // 日记顺手记下心情。他亲手改过的（mood_is_manual）不覆盖 ——
+    // 过滤条件写在 URL 上，改过的那条压根匹配不到
+    if (a.kind === "diary" && a.mood) {
+      await fetch(
+        `${SUPA_URL}/rest/v1/captures?id=eq.${capture_id}&mood_is_manual=is.false`,
+        { method: "PATCH", headers: JH, body: JSON.stringify({ mood: a.mood }) },
+      );
+    }
+
     // 多出来的那几天：各建一条独立的饮食笔记，挂同一段录音
     for (const day of extraDays) {
       const iso = day.date ?? localDateIso(tz);

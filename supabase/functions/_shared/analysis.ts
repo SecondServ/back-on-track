@@ -1,4 +1,5 @@
 import { callLLM } from "./llm.ts";
+import { localParts, tzOffsetMs, zonedTime } from "./tz.ts";
 // 一次调用完成：纠错 + 归类 + 结构化提取。
 // 不拆成三次串行 —— 延迟和成本都会翻倍。
 //
@@ -20,7 +21,7 @@ export interface Analysis {
   summary: string;
   tasks: {
     title: string;
-    due_at: string | null;      // ISO8601，已按 client_tz 解析
+    due_at: string | null;      // 模型给当地墙上时间，analyze() 换算成 UTC ISO8601 后返回
     due_is_fuzzy: boolean;
     priority: "low" | "medium" | "high";
     needs_reminder: boolean;
@@ -38,6 +39,8 @@ export interface Analysis {
     angle: string; clean_text: string; titles: string[]; hooks: string[];
   } | null;
   note: { body: string; tags: string[] } | null;
+  /** 日记的心情：5 开心 / 4 不错 / 3 平和 / 2 低落 / 1 难过。不是日记给 null */
+  mood: number | null;
   meal: {
     days: {
       /** 这一天是哪天（yyyy-MM-dd）。null = 录音当天 */
@@ -98,6 +101,7 @@ const SCHEMA = obj({
     angle: str(), clean_text: str(), titles: arr(str()), hooks: arr(str()),
   }, true),
   note: obj({ body: str(), tags: arr(str()) }, true),
+  mood: { type: ["integer", "null"], enum: [1, 2, 3, 4, 5, null] },
   meal: obj({
     // 按天分组：一条语音里常常同时说了今天和昨天吃的
     days: arr(obj({
@@ -113,6 +117,19 @@ const SCHEMA = obj({
 });
 
 // ── Prompt ────────────────────────────────────────────────────────────────
+
+/** 心情五档的判断标准。日记分析和补算旧日记共用这一份 */
+export const MOOD_RULES = `## mood：这篇日记的心情（五档）
+
+按**整篇读下来的主基调**判断，不是挑某一句：
+
+- 5 开心：明显高兴、兴奋、满足、有成就感
+- 4 不错：整体偏积极，小确幸、顺利、轻松
+- 3 平和：平静地记事，情绪起伏不大；好坏参半、互相抵消的也算这里
+- 2 低落：有点累、烦、失望、焦虑，但不算很重
+- 1 难过：明显的难过、沮丧、愤怒、痛苦
+
+**拿不准就往 3 靠**，别为了显得敏锐而放大情绪。`;
 
 const SYSTEM = `你在处理一个人随口说出的语音记录。他中英文混说，说话零散、不完整、有口癖。
 你的任务是把这段转录整理成结构化数据。
@@ -151,6 +168,9 @@ kind 只是**主类型**，决定这条记录在 App 里首先出现在哪；它
 
 memo 和 diary 的内容放进 note 对象：body 是整理后的正文，tags 给 1–3 个关键词。
 
+${MOOD_RULES}
+**只有 kind 是 diary 时才给 mood，其他类型一律 null。**
+
 ## 不要用同义反复凑字段
 
 **说话人没提到的信息，对应字段就给空字符串（空数组给 []），不要换个说法把 summary 重说一遍。**
@@ -186,7 +206,10 @@ memo 和 diary 的内容放进 note 对象：body 是整理后的正文，tags �
 
 ## 时间
 
-- 基于给定的当前时间和时区解析。"下周""这个星期""周五"都要算成具体 ISO8601 时间戳。
+- 基于给定的**当地**当前时间解析。"下周""这个星期""周五""五分钟后""一小时之后"都要算成具体时间。
+- **due_at 一律写成当地的墙上时间，格式 \`YYYY-MM-DDTHH:mm\`（例如 2026-09-29T23:00）。
+  不要带 Z，不要带 +08:00 这类时区后缀，不要换算成 UTC** —— 时区换算由程序完成。
+  "五分钟后"就是在给出的当地当前时间上加五分钟。
 - 没有明确时间点时：
   - **"X 之前""by X""X 前搞定"** 这类表示截止的 → 当天 **18:00**（这是最后期限，不是早上要做的事）
   - **"提醒我周五交房租"** 这类表示当天要做的 → 当天 **09:00**
@@ -241,7 +264,7 @@ const userMsg = (transcript: string, now: string, tz: string, forcedKind?: strin
     ? `\n\n**用户已经手动指定这段话的类型是「${forcedKind}」，不要再自己判断 kind。**\n` +
       `请把 kind 设为 ${forcedKind}、kind_confidence 设为 1，然后重点把该类型的内容提取完整。`
     : "";
-  return `当前时间：${now}\n时区：${tz}${hint}\n\n转录：\n${transcript}`;
+  return `${nowLine(now, tz)}${hint}\n\n转录：\n${transcript}`;
 };
 
 // ── 两条通路 ──────────────────────────────────────────────────────────────
@@ -268,6 +291,11 @@ export async function analyze(opts: {
   });
 
   const parsed = JSON.parse(raw) as Analysis;
+
+  // 模型只管「当地几点」，换算成 UTC 由代码做。
+  // 以前让模型自己换算：在洛杉矶碰巧对，在上海把当地 15:00 写成了 15:00Z，
+  // 整整早了 8 小时 —— 「五分钟后提醒我」落在了过去，一个闹钟都没排上。
+  for (const t of parsed.tasks ?? []) t.due_at = wallToIso(t.due_at, tz);
 
   if (forcedKind) {
     // 用户说了算，模型说什么都不改
@@ -367,3 +395,36 @@ export async function cleanText(
   return keepCleanedOrRaw(transcript, cleaned);
 }
 
+
+
+// ── 时间：模型只说当地墙上时间，换算交给代码 ─────────────────────────────
+
+const WEEKDAYS = ["", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"];
+
+/** 给模型看的当前时间：直接给当地时间，免得它自己做时区加减 */
+export function nowLine(nowIso: string, tz: string): string {
+  const at = new Date(nowIso);
+  const { y, m, d, hh, mm } = localParts(at, tz);
+  const off = Math.round(tzOffsetMs(at, tz) / 60000);
+  const sign = off >= 0 ? "+" : "-";
+  const abs = Math.abs(off);
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay() || 7;
+  return `当前当地时间：${y}-${p2(m)}-${p2(d)} ${p2(hh)}:${p2(mm)}（${WEEKDAYS[dow]}）\n` +
+    `时区：${tz}（UTC${sign}${p2(Math.floor(abs / 60))}:${p2(abs % 60)}）`;
+}
+
+/**
+ * 把模型给的当地墙上时间换算成 UTC ISO8601。
+ *
+ * 不管模型有没有不听话带上 Z 或偏移，一律只取「年月日时分」当成当地时间 ——
+ * 我们给它的就是当地时间，它算出来的也就是当地时间，后缀只会是乱贴的标签。
+ * 解析不了的原样返回 null，宁可不排提醒也不排错时间。
+ */
+export function wallToIso(s: string | null | undefined, tz: string): string | null {
+  if (!s) return null;
+  const mt = s.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2}))?/);
+  if (!mt) return null;
+  const [, y, mo, d, h, mi] = mt;
+  return zonedTime(+y, +mo, +d, h ? +h : 9, tz, mi ? +mi : 0).toISOString();
+}

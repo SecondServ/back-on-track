@@ -1,5 +1,6 @@
 package com.hector.backontrack.ui
 
+import androidx.compose.foundation.lazy.LazyListState
 import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
@@ -46,9 +47,9 @@ import kotlinx.coroutines.launch
  * 「记录」页顶部的筛选。枚举顺序 = 屏幕上从左到右的顺序。
  *
  * 日记排在最后且**单独加锁**：它不进「默认」、也不进「全部」，
- * 只能主动点进来并过一次系统验证。
+ * 点进来或滑进来都要过一次系统验证；切到别的筛选或别的页面就重新上锁。
  */
-private enum class CaptureFilter(val label: String) {
+enum class CaptureFilter(val label: String) {
     Memo("备忘"), Ask("问题"), All("全部"), Meal("饮食"), Diary("日记"),
 }
 
@@ -58,16 +59,40 @@ private enum class CaptureFilter(val label: String) {
  * 它们不再各占顶栏一格 —— 顶栏留给真正常用的几个大类，
  * 细分收进二级菜单：已经停在「备忘」上时再点一下就展开。
  */
-private enum class MemoSub(val kind: String, val label: String) {
+enum class MemoSub(val kind: String, val label: String) {
     Content("content", "选题"), Idea("idea", "灵感"), Note("memo", "备忘"),
 }
 
 /** 「备忘」这一档收哪些 kind。note 是迁到 memo 之前的老分类 */
 private val MEMO_GROUP = setOf("memo", "note", "content", "idea", "inbox")
 
+/**
+ * 记录页里「要跨过详情页活下来」的那几样状态。
+ *
+ * 点开一条记录时，列表页整个退出了组合，它自己 remember 的东西全扔了 ——
+ * 以前看完一篇日记返回，筛选掉回「备忘」、日记重新上锁，还得再验一次指纹。
+ * 所以这几样提到 MainScaffold 里保管。
+ */
+class CaptureListUi {
+    var filter by mutableStateOf(CaptureFilter.Memo)
+    /** 解锁只在前台这一程有效，App 一退到后台就清掉（MainScaffold 里监听） */
+    var diaryUnlocked by mutableStateOf(false)
+    var memoSub by mutableStateOf<MemoSub?>(null)
+    /** 上次已经为哪个筛选做过「滚回顶部 + 滑入动画」。从详情页回来筛选没变，就别再做一遍 */
+    var shownFilter: CaptureFilter? = null
+    val listState = LazyListState()
+
+    /** App 退到后台：日记重新上锁 */
+    fun lock() {
+        diaryUnlocked = false
+        if (filter == CaptureFilter.Diary) filter = CaptureFilter.Memo
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CaptureListScreen(
+    ui: CaptureListUi,
     reloadKey: Int,
     /** 每录完一条自增。新条目排在最上面，得主动滚回去，否则用户在底部根本看不见 */
     newCaptureKey: Int,
@@ -85,11 +110,12 @@ fun CaptureListScreen(
     var refreshing by remember { mutableStateOf(false) }
     // 刚删掉的那条，给几秒「撤销」的机会
     var justTrashed by remember { mutableStateOf<Capture?>(null) }
-    val listState = rememberLazyListState()
+    // 滚动位置也跟着保管：看完一篇回来，还停在原来那一屏
+    val listState = ui.listState
 
-    var filter by remember { mutableStateOf(CaptureFilter.Memo) }
-    // 解锁只在前台这一程有效，退到后台就重新上锁（见下面的生命周期监听）
-    var diaryUnlocked by remember { mutableStateOf(false) }
+    var filter by ui::filter
+    // 解锁只在前台这一程有效，退到后台就重新上锁（MainScaffold 里监听）
+    var diaryUnlocked by ui::diaryUnlocked
     val activity = context.findActivity()
 
     // 新筛选在旧筛选的右边还是左边 —— 决定内容从哪一侧滑进来
@@ -97,6 +123,9 @@ fun CaptureListScreen(
     fun goTo(f: CaptureFilter) {
         val order = CaptureFilter.entries
         slideFrom = if (order.indexOf(f) >= order.indexOf(filter)) 1 else -1
+        // 从日记切去别的筛选就重新上锁：解锁只管「在日记里看一篇、退回日记列表」这一程，
+        // 一旦切出去，再回来就得重新验证
+        if (filter == CaptureFilter.Diary && f != CaptureFilter.Diary) diaryUnlocked = false
         filter = f
     }
 
@@ -111,13 +140,13 @@ fun CaptureListScreen(
         if (!launched) error = "系统验证没能打开 —— 手机得先设置锁屏密码或指纹"
     }
 
-    // 左右滑在筛选之间走一格。**日记不在滑动序列里** ——
-    // 手指一划就蹦出验证框太吓人，它只能被主动点开
+    // 左右滑在筛选之间走一格，日记也在序列里（排最右边）。
+    // 滑进日记跟点进去一样要过一次验证 —— 走的是 pick()，没通过就停在原地；
+    // 从日记滑出去，goTo() 会顺手重新上锁
     fun step(dir: Int) {
-        val order = CaptureFilter.entries.filter { it != CaptureFilter.Diary }
+        val order = CaptureFilter.entries
         val i = order.indexOf(filter)
-        if (i < 0) { goTo(CaptureFilter.Memo); return }
-        order.getOrNull(i + dir)?.let { goTo(it) }
+        order.getOrNull(i + dir)?.let { pick(it) }
     }
     // 长按进入「可删除」状态：卡片开始抖，这时候把某条往右滑走就是删除。
     // 平时（没抖动）左右滑是切筛选 —— 两种含义靠状态分开，不靠方向。
@@ -127,7 +156,7 @@ fun CaptureListScreen(
     var newestFirst by remember { mutableStateOf(AppPrefs.captureSortDesc(context)) }
     // 每次进这个页面重新读一次，从设置里改完回来能立刻生效
     // 「备忘」里选中的题材。null = 三个题材都显示（相当于原来的「默认」）
-    var memoSub by remember { mutableStateOf<MemoSub?>(null) }
+    var memoSub by ui::memoSub
     var subMenu by remember { mutableStateOf(false) }
 
     suspend fun refresh() {
@@ -169,30 +198,27 @@ fun CaptureListScreen(
 
     // 切换「默认 / 全部」后回到顶部：换了筛选却停在原来的滚动位置，
     // 新露出来的条目全在视野上方，看起来就像「切了没反应」
+    //
+    // 从详情页回来时这个 effect 也会跑（列表是重新组合的），但筛选没变 ——
+    // 那时候不能滚，否则看完第十篇日记回来又被弹回第一篇
+    val filterChanged = ui.shownFilter != null && ui.shownFilter != filter
     LaunchedEffect(filter) {
-        if (captures.isNotEmpty()) listState.animateScrollToItem(0)
+        if (filterChanged && captures.isNotEmpty()) listState.animateScrollToItem(0)
     }
 
     // 切筛选时内容从来的那一侧滑进来 —— 瞬间替换会让人分不清「到底切没切」。
     // 只动一层 graphicsLayer，列表本身不重建，滚动位置和回收都不受影响
     val enter = remember { Animatable(0f) }
     LaunchedEffect(filter) {
+        val changed = ui.shownFilter != null && ui.shownFilter != filter
+        ui.shownFilter = filter
+        if (!changed) return@LaunchedEffect
         enter.snapTo(slideFrom.toFloat())
         enter.animateTo(0f, tween(260, easing = FastOutSlowInEasing))
     }
 
-    // 离开前台就重新上锁：隔一会儿别人拿起手机，不该还停在日记上
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val obs = LifecycleEventObserver { _, e ->
-            if (e == Lifecycle.Event.ON_STOP) {
-                diaryUnlocked = false
-                if (filter == CaptureFilter.Diary) filter = CaptureFilter.Memo
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(obs)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
-    }
+    // 离开前台就重新上锁 —— 这件事挪到了 MainScaffold：
+    // 放在这里的话，正看着某篇日记时退到后台，列表页不在组合里，监听根本不在，锁不上
 
     LaunchedEffect(justTrashed) {
         if (justTrashed != null) { delay(5000); justTrashed = null }

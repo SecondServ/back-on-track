@@ -114,7 +114,11 @@ async function tasksRecap(
   const open = await q(`status=neq.done`);
   // 完成率的分母用「这个月建的」而不是「所有未完成的」——
   // 否则历史积压会把每个月的数字都压到很难看，看一眼就不想看了
-  const rate = created.length ? Math.round((done.length / created.length) * 100) : 0;
+  //
+  // 分子也必须是「这个月建的里面完成了几件」。以前分子用的是「这个月完成的全部」，
+  // 把上个月建、这个月才做完的也算进来，分子分母不是一拨人，10 月算出了 217%。
+  const createdDone = (created as { status: string }[]).filter((t) => t.status === "done").length;
+  const rate = created.length ? Math.round((createdDone / created.length) * 100) : 0;
 
   const now = Date.now();
   const dayMs = 86_400_000;
@@ -196,6 +200,7 @@ async function tasksRecap(
   return {
     done: done.length,
     created: created.length,
+    created_done: createdDone,
     rate,
     open_count: open.length,
     calendar,

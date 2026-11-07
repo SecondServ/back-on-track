@@ -1,5 +1,6 @@
 package com.hector.backontrack.ui
 
+import kotlin.math.roundToInt
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.pager.HorizontalPager
@@ -199,7 +200,8 @@ private fun LoadingHint() {
 private suspend fun loadRecap(month: String, section: RecapSection, force: Boolean): JSONObject {
     var d = Api.recap(month, section.key, force)
     val stale = !d.has("by_day") ||
-        (section == RecapSection.Tasks && !d.has("calendar")) ||
+        // created_done 是修完成率时加的；没有它的旧缓存算出来的是错的（217%），重算一次
+        (section == RecapSection.Tasks && (!d.has("calendar") || !d.has("created_done"))) ||
         (section == RecapSection.Ideas && !d.has("feed")) ||
         (section == RecapSection.Meal &&
             (!d.has("health") || !d.has("calories") ||
@@ -300,6 +302,7 @@ private fun TasksRecap(d: JSONObject, month: String) {
     val done = d.optInt("done")
     val created = d.optInt("created")
     val rate = d.optInt("rate")
+    val createdDone = d.optInt("created_done", done.coerceAtMost(created))
 
     Spacer(Modifier.height(8.dp))
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -310,12 +313,16 @@ private fun TasksRecap(d: JSONObject, month: String) {
 
     Section("这个月新建的，完成了多少")
     DonutChart(
-        slices = listOf("已完成" to done, "还没做" to (created - done).coerceAtLeast(0)),
+        // 环里只算这个月建的那一拨：完成了几件、还剩几件。
+        // 上面的「完成」是这个月做完的全部（含以前建的），两个数不是一回事
+        slices = listOf("已完成" to createdDone, "还没做" to (created - createdDone).coerceAtLeast(0)),
         centerLabel = "$rate%",
     )
     Text("分母是这个月新建的 $created 件 —— 用历史积压当分母，数字只会一个月比一个月难看",
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+    MoodSection(month)
 
     val calArr = d.optJSONArray("calendar")
     if (calArr != null && calArr.length() > 0) {
@@ -618,4 +625,52 @@ private fun Bullet(text: String) {
         Text("• ", style = MaterialTheme.typography.bodyLarge)
         Text(text, style = MaterialTheme.typography.bodyLarge)
     }
+}
+
+
+/**
+ * 这个月的心情折线。
+ *
+ * 直接从日记读，不走回顾的缓存 —— 回顾一天才重算一次，
+ * 刚记的日记、刚改的心情应该马上就画上去。
+ * 心情功能上线前的旧日记没有心情，第一次打开时顺手补算（每次最多 20 篇）。
+ */
+@Composable
+private fun MoodSection(month: String) {
+    var points by remember(month) { mutableStateOf<List<com.hector.backontrack.net.MoodPoint>?>(null) }
+    var filling by remember(month) { mutableStateOf(false) }
+    LaunchedEffect(month) {
+        val first = runCatching { Api.listDiaryMoods(month) }.getOrNull() ?: return@LaunchedEffect
+        points = first
+        val missing = first.filter { it.mood == null }.map { it.id }
+        if (missing.isNotEmpty()) {
+            filling = true
+            // 每批 5 篇：一篇要几秒，一口气补十几篇会超时；分批还能边补边画
+            for (chunk in missing.chunked(5)) {
+                if (runCatching { Api.inferMoods(chunk) }.isFailure) break
+                points = runCatching { Api.listDiaryMoods(month) }.getOrNull() ?: points
+            }
+            filling = false
+        }
+    }
+    val p = points ?: return
+    if (p.isEmpty()) return
+    Section("这个月的心情")
+    val (y, m) = month.split("-").map { it.toInt() }
+    val rated = p.filter { it.mood != null }
+    if (rated.isEmpty()) {
+        Text(if (filling) "正在从日记里读心情…" else "这个月的日记还没有心情",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
+    MoodLineChart(rated, y, m)
+    val avg = rated.sumOf { it.mood!! }.toDouble() / rated.size
+    val label = MOOD_LABELS.getValue(avg.roundToInt().coerceIn(1, 5))
+    Text(
+        "${rated.size} 篇日记，平均下来偏「$label」" +
+            if (filling) "（还在补算旧日记的心情…）" else "",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }

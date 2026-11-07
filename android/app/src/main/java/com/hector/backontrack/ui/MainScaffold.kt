@@ -97,6 +97,13 @@ fun MainScaffold(onSignOut: () -> Unit, startOnTasks: Boolean = false) {
         )
     }
     val scope = rememberCoroutineScope()
+    // 记录页的筛选 / 日记解锁 / 滚动位置，跨过详情页保管（见 CaptureListUi）
+    val listUi = remember { CaptureListUi() }
+    // 离开记录页去了别处（待办、回顾、设置…）就给日记上锁。
+    // 只有「点开一篇记录再返回」这一种离开不算 —— 那是在日记里看东西，不是切走了
+    LaunchedEffect(screen) {
+        if (screen !is Screen.Captures && screen !is Screen.CaptureDetail) listUi.lock()
+    }
 
     // 离线时录下的东西存在本地，这里负责把它们送出去：
     // 开 App 补一次，之后网一回来就自动补。
@@ -126,6 +133,8 @@ fun MainScaffold(onSignOut: () -> Unit, startOnTasks: Boolean = false) {
     // 这是应用级的事，不该挂在某个列表页上 —— 之前挂在列表页，
     // 重构时把那一行弄丢了，提醒就整整齐齐地不再更新了。
     suspend fun syncReminders() {
+        // 换过时区的话先把循环提醒搬过来（广播那一下可能没网、没跑成），再拉闹钟
+        com.hector.backontrack.reminder.TimeZoneWatcher.followIfChanged(context)
         try { ReminderScheduler.syncFromServer(context) } catch (_: Exception) {}
     }
     LaunchedEffect(Unit) { syncReminders() }
@@ -146,6 +155,14 @@ fun MainScaffold(onSignOut: () -> Unit, startOnTasks: Boolean = false) {
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val obs = LifecycleEventObserver { _, event ->
+            // 退到后台就给日记重新上锁：隔一会儿别人拿起手机，不该还停在日记上。
+            // 正开着某篇日记的话，连详情页一起退回列表
+            if (event == Lifecycle.Event.ON_STOP) {
+                if (screen is Screen.CaptureDetail && listUi.filter == CaptureFilter.Diary) {
+                    screen = Screen.Captures
+                }
+                listUi.lock()
+            }
             if (event == Lifecycle.Event.ON_RESUME) {
                 // 先让列表去重新拉一次，**再**同步提醒。
                 // 反过来写的话，刷新排在一次网络往返之后 —— 同步慢一点或者卡住，
@@ -257,6 +274,7 @@ fun MainScaffold(onSignOut: () -> Unit, startOnTasks: Boolean = false) {
                     modifier = Modifier.fillMaxSize(),
                 )
                 else -> CaptureListScreen(
+                    ui = listUi,
                     reloadKey = reloadKey,
                     newCaptureKey = newCaptureKey,
                     onOpenCapture = { screen = Screen.CaptureDetail(it) },
@@ -293,14 +311,21 @@ fun MainScaffold(onSignOut: () -> Unit, startOnTasks: Boolean = false) {
                 // 转写会断在半路。
                 onAskRecorded = { file, ms ->
                     scope.launch {
+                        var id: String? = null
                         try {
-                            val id = Api.createAskPlaceholder()
+                            id = Api.createAskPlaceholder()
                             screen = Screen.CaptureDetail(id)   // 先进对话页
                             val q = Api.transcribeAudio(file, ms)
                             if (q.isBlank()) throw IllegalStateException("没听清")
                             Api.fillAskQuestion(id, q)
                         } catch (e: Exception) {
-                            status = "问答失败：${e.message?.take(120)}"
+                            // 对话页已经开着了：录音存到这条笔记名下，页面上会亮出「重试」
+                            val kept = id != null && e !is IllegalStateException &&
+                                com.hector.backontrack.audio.FailedClips.save(
+                                    context, id, file, ms,
+                                    com.hector.backontrack.audio.FailedClips.Mode.AskFirst)
+                            status = if (kept) "问题没传上去，录音已存在手机里，可以重试"
+                                     else "问答失败：${e.message?.take(120)}"
                         } finally {
                             file.delete()
                         }

@@ -69,3 +69,14 @@ export function addMonths(y: number, m: number, d: number, n: number) {
   const nm = (total % 12) + 1;
   return { y: ny, m: nm, d: Math.min(d, DAYS_IN_MONTH(ny, nm)) };
 }
+
+/**
+ * 墙上时间搬家：fromTz 的「某天几点几分」→ toTz 的同一天同一时刻。
+ * 用在人换了时区之后：「每天晚上 10 点」到了上海，还该是上海的晚上 10 点。
+ */
+export function shiftWallClock(iso: string, fromTz: string, toTz: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return iso;
+  const { y, m, d, hh, mm } = localParts(at, fromTz);
+  return zonedTime(y, m, d, hh, toTz, mm).toISOString();
+}

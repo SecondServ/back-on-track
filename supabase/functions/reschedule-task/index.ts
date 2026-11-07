@@ -6,6 +6,7 @@
 
 import { planReminders } from "../_shared/reminders.ts";
 import { catchUp, nextOccurrence } from "../_shared/recurrence.ts";
+import { shiftWallClock } from "../_shared/tz.ts";
 
 const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -19,7 +20,8 @@ Deno.serve(async (req) => {
   const JH = { ...H, "Content-Type": "application/json" };
 
   // advance = 用户刚完成了这一次，滚到下一次
-  const { task_id, tz, advance } = await req.json().catch(() => ({}));
+  // from_tz = 手机刚从这个时区换到 tz：循环待办的「几点」跟着人走
+  const { task_id, tz, advance, from_tz } = await req.json().catch(() => ({}));
   if (!task_id) return json({ error: "missing_task_id" }, 400);
 
   const tr = await fetch(
@@ -47,9 +49,12 @@ Deno.serve(async (req) => {
       interval: task.recur_interval ?? 1,
       weekdays: task.recur_weekdays ?? null,
     };
+    // 换了时区：先把「原来那边的晚上 10 点」搬成「这边的晚上 10 点」，再往后推。
+    // 一次性待办不搬 —— 它通常绑着某地的真实时刻（洛杉矶的看诊预约），挪了反而误事
+    if (from_tz && from_tz !== zone) dueAt = shiftWallClock(dueAt, from_tz, zone);
     dueAt = advance
-      ? (nextOccurrence(dueAt, rec, zone) ?? dueAt)
-      : catchUp(dueAt, rec, zone);
+      ? (nextOccurrence(dueAt!, rec, zone) ?? dueAt)
+      : catchUp(dueAt!, rec, zone);
     if (dueAt !== task.due_at) {
       await fetch(`${SUPA_URL}/rest/v1/tasks?id=eq.${task_id}`, {
         method: "PATCH", headers: JH, body: JSON.stringify({ due_at: dueAt }),

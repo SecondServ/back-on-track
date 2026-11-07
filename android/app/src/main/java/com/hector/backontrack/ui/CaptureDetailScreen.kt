@@ -47,7 +47,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.hector.backontrack.AppPrefs
 import com.hector.backontrack.R
+import com.hector.backontrack.audio.FailedClips
 import com.hector.backontrack.audio.Recorder
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextLayoutResult
+import java.io.File
 import com.hector.backontrack.net.Api
 import com.hector.backontrack.net.Capture
 import com.hector.backontrack.net.QaTurn
@@ -127,7 +135,7 @@ private fun presetsFor(kind: String?): List<Pair<String, String>> = buildList {
  * 语音做成一个列表（最初那段 + 后来追加的），默认收起来，
  * 因为大多数时候要看的是文字而不是重听。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun CaptureDetailScreen(captureId: String, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -149,6 +157,19 @@ fun CaptureDetailScreen(captureId: String, onBack: () -> Unit) {
     // 两者不等 = 有未保存的修改。
     var draft by remember { mutableStateOf<TextFieldValue?>(null) }
     var savedText by remember { mutableStateOf<String?>(null) }
+    // 撤销 / 重做。自动保存会把误删立刻存上去，有它才找得回来
+    val history = remember(captureId) { EditHistory() }
+    // 没送出去、存在手机里等重试的录音
+    var failed by remember { mutableStateOf<List<FailedClips.Clip>>(emptyList()) }
+    var retrying by remember { mutableStateOf(false) }
+    var confirmDiscard by remember { mutableStateOf(false) }
+    // 键盘：光标那一行始终要露在键盘上面
+    val density = LocalDensity.current
+    val imeBottom = WindowInsets.ime.getBottom(density)
+    val imeVisible = imeBottom > 0
+    val cursorBringer = remember { BringIntoViewRequester() }
+    var textLayout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var editorFocused by remember { mutableStateOf(false) }
     var saveHint by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf<String?>(null) }
     /** 正在处理的那条指令。非空时底部显示占位卡 */
@@ -211,7 +232,23 @@ fun CaptureDetailScreen(captureId: String, onBack: () -> Unit) {
         }
     }
 
-    LaunchedEffect(captureId) { load() }
+    LaunchedEffect(captureId) {
+        failed = FailedClips.list(context, captureId)
+        load()
+    }
+
+    // 光标跟着键盘走：打字换行、键盘弹出 / 收起、语音插入之后，
+    // 都把光标那一行（连同上下各一点）滚到看得见的地方。
+    // imeBottom 进 key：键盘是一帧一帧升起来的，每帧都重算，最后一次落在键盘停稳之后。
+    LaunchedEffect(draft?.selection, draft?.text, textLayout, imeBottom, editorFocused) {
+        val d = draft ?: return@LaunchedEffect
+        val l = textLayout ?: return@LaunchedEffect
+        if (!editorFocused) return@LaunchedEffect
+        if (l.layoutInput.text.text != d.text) return@LaunchedEffect   // 布局还没跟上新文字
+        val r = l.getCursorRect(d.selection.end.coerceIn(0, d.text.length))
+        val margin = with(density) { 56.dp.toPx() }
+        cursorBringer.bringIntoView(Rect(r.left, r.top - margin / 2, r.right, r.bottom + margin))
+    }
 
     // 占位笔记（先跳进来、后转写）此时还没有任何一轮，轮询等文字回填。
     // 顺便走 load()，把占位标题「语音识别中…」也换成真正的问题。
@@ -225,6 +262,8 @@ fun CaptureDetailScreen(captureId: String, onBack: () -> Unit) {
         if (capture?.kind == "ask" && turns.isEmpty()) {
             repeat(200) {
                 delay(1500)
+                // 第一问在主界面那边转写，失败的话录音会存到这条笔记名下 —— 及时亮出重试
+                failed = FailedClips.list(context, captureId)
                 val t = runCatching { Api.listQaTurns(captureId) }.getOrDefault(emptyList())
                 if (t.isNotEmpty()) { load(); return@LaunchedEffect }
             }
@@ -355,6 +394,121 @@ fun CaptureDetailScreen(captureId: String, onBack: () -> Unit) {
         }
     }
 
+    // ── 录音送出去的几条路。失败时录音不删，存进 FailedClips 等重试 ──────
+
+    /** 追加一段：转写好的文字插在光标处 */
+    suspend fun doAppend(file: File, ms: Int) {
+        saveNow()          // 先把手改的内容存住，再追加
+        val added = Api.appendVoiceSegment(captureId, file, ms)
+        // 插在光标所在的位置，而不是永远丢到最后一段后面
+        draft?.let { cur ->
+            history.checkpoint(cur)
+            val at = cur.selection.start.coerceIn(0, cur.text.length)
+            val merged = cur.text.substring(0, at) + added + cur.text.substring(at)
+            draft = TextFieldValue(merged, TextRange(at + added.length))
+        }
+        saveNow()
+        busy = null
+        // 日记又追加了一段，心情可能变了。他亲手改过的服务端会跳过
+        if (capture?.kind == "diary" && capture?.moodIsManual == false) {
+            runCatching { Api.inferMoods(listOf(captureId)) }
+        }
+        load()
+    }
+
+    /** 对笔记下指令。松手立刻滚到底、亮出占位卡 —— 结果会长在页面最下面 */
+    suspend fun doCommand(file: File, ms: Int) {
+        pending = "正在转文字…"
+        try {
+            saveNow()   // 先把手打的改动存住再走网络
+            val instruction = Api.transcribeAudio(file, ms)
+            if (instruction.isBlank()) throw NotHeard()
+            pending = instruction
+            // 调研类指令要联网搜索，可能要十几秒
+            outputs = outputs + Api.runNoteCommand(captureId, instruction = instruction)
+            justRan = true
+        } finally { pending = null }
+    }
+
+    /** 追问：录音只是输入手段，转完即删；接着让 AI 答下一轮 */
+    suspend fun doAsk(file: File, ms: Int) {
+        transcribing = true
+        try {
+            val q = Api.transcribeAudio(file, ms)
+            if (q.isBlank()) throw NotHeard()
+            Api.addQaTurn(captureId, "user", q)
+            turns = Api.listQaTurns(captureId)   // 触发上面的自动作答
+        } finally { transcribing = false }
+    }
+
+    /** 主界面那一问没转写成功，在这里补上 */
+    suspend fun doAskFirst(file: File, ms: Int) {
+        transcribing = true
+        try {
+            val q = Api.transcribeAudio(file, ms)
+            if (q.isBlank()) throw NotHeard()
+            Api.fillAskQuestion(captureId, q)
+            load()
+        } finally { transcribing = false }
+    }
+
+    suspend fun runClip(file: File, ms: Int, mode: FailedClips.Mode) = when (mode) {
+        FailedClips.Mode.Append -> doAppend(file, ms)
+        FailedClips.Mode.Command -> doCommand(file, ms)
+        FailedClips.Mode.Ask -> doAsk(file, ms)
+        FailedClips.Mode.AskFirst -> doAskFirst(file, ms)
+    }
+
+    /**
+     * 送一段刚录好的音。**只有服务端确认收下之后录音才删** ——
+     * 失败（403、断网、超时…）或者中途退出了这一页，都先把录音存进手机。
+     */
+    fun launchClip(file: File, ms: Int, mode: FailedClips.Mode, label: String) {
+        scope.launch {
+            try {
+                runClip(file, ms, mode)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 还没传完就退出了这一页。不知道服务端收没收到，宁可多存一份
+                FailedClips.save(context, captureId, file, ms, mode)
+                throw e
+            } catch (e: NotHeard) {
+                busy = "没听清，再说一遍"
+            } catch (e: Exception) {
+                busy = if (FailedClips.save(context, captureId, file, ms, mode)) {
+                    failed = FailedClips.list(context, captureId)
+                    "${label}没传上去，录音已存在手机里，点上面的「重试」"
+                } else "${label}失败：${e.message?.take(80)}"
+            } finally { file.delete() }
+        }
+    }
+
+    /** 把存在手机里的录音按顺序再送一遍。成功一段删一段 */
+    fun retryFailed() {
+        if (retrying) return
+        retrying = true
+        busy = "重新上传中…"
+        scope.launch {
+            try {
+                for (clip in FailedClips.list(context, captureId)) {
+                    try {
+                        runClip(clip.audio, clip.durationMs, clip.mode)
+                    } catch (e: NotHeard) {
+                        // 转出来是空的，留着也没用
+                    }
+                    FailedClips.remove(clip)
+                }
+                busy = null
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                busy = "还是没传上去：${e.message?.take(60)}"
+            } finally {
+                retrying = false
+                failed = FailedClips.list(context, captureId)
+            }
+        }
+    }
+
     fun finishAppend(action: TalkAction) {
         if (!recording) return
         recording = false
@@ -370,64 +524,19 @@ fun CaptureDetailScreen(captureId: String, onBack: () -> Unit) {
         // 转文字的等待改成对话里的一个气泡。按钮上转圈会让人以为
         // 「还不能再说话」，而其实随时都可以。
         if (capture?.kind == "ask") {
-            transcribing = true
             busy = null
-            scope.launch {
-                try {
-                    // 录音只是输入手段，转完即删；接着让 AI 答下一轮
-                    val q = Api.transcribeAudio(file, ms)
-                    if (q.isBlank()) throw IllegalStateException("没听清")
-                    Api.addQaTurn(captureId, "user", q)
-                    turns = Api.listQaTurns(captureId)   // 触发上面的自动作答
-                } catch (e: Exception) {
-                    busy = "追问失败：${e.message?.take(80)}"
-                } finally {
-                    transcribing = false
-                    file.delete()
-                }
-            }
+            launchClip(file, ms, FailedClips.Mode.Ask, "追问")
             return
         }
         // 灵感 / 备忘 / 选题：原地松手是**下指令**，不是加内容。
         // 说的话当命令用，这条笔记的正文当上下文，AI 改完整篇换上去。
         if (action == TalkAction.Send && capture?.kind in COMMAND_KINDS) {
-            // 松手立刻滚到底、亮出占位卡 —— 这时候你正等着看结果，
-            // 而结果会长在页面最下面
-            pending = "正在转文字…"
-            scope.launch {
-                try {
-                    saveNow()   // 先把手打的改动存住再走网络
-                    val instruction = Api.transcribeAudio(file, ms)
-                    if (instruction.isBlank()) throw IllegalStateException("没听清")
-                    pending = instruction
-                    // 调研类指令要联网搜索，可能要十几秒
-                    outputs = outputs + Api.runNoteCommand(captureId, instruction = instruction)
-                    justRan = true
-                } catch (e: Exception) {
-                    busy = "指令没执行：${e.message?.take(80)}"
-                } finally { pending = null; file.delete() }
-            }
+            launchClip(file, ms, FailedClips.Mode.Command, "指令")
             return
         }
 
         busy = "转写中…"
-        scope.launch {
-            try {
-                saveNow()          // 先把手改的内容存住，再追加
-                val added = Api.appendVoiceSegment(captureId, file, ms)
-                // 插在光标所在的位置，而不是永远丢到最后一段后面
-                draft?.let { cur ->
-                    val at = cur.selection.start.coerceIn(0, cur.text.length)
-                    val merged = cur.text.substring(0, at) + added + cur.text.substring(at)
-                    draft = TextFieldValue(merged, TextRange(at + added.length))
-                }
-                saveNow()
-                busy = null
-                load()
-            } catch (e: Exception) {
-                busy = "追加失败：${e.message?.take(80)}"
-            } finally { file.delete() }
-        }
+        launchClip(file, ms, FailedClips.Mode.Append, "这段录音")
     }
 
     Scaffold(
@@ -446,13 +555,16 @@ fun CaptureDetailScreen(captureId: String, onBack: () -> Unit) {
             c == null -> Box(Modifier.fillMaxSize().padding(pad), Alignment.Center) {
                 Text("这条记录不见了", textAlign = TextAlign.Center)
             }
-            else -> Box(Modifier.fillMaxSize().padding(pad)) {
+            // imePadding：页面底边跟着键盘往上收。不加的话（edge-to-edge 下系统不会替你缩），
+            // 内容一直铺到键盘底下，正在打的那几行就被键盘盖住了
+            else -> Box(Modifier.fillMaxSize().padding(pad).consumeWindowInsets(pad).imePadding()) {
               Column(
                 Modifier.fillMaxSize()
                     .verticalScroll(scrollState)
                     .padding(16.dp)
-                    // 给悬浮的说话键让出落脚空间，最后一段不会被压住
-                    .padding(bottom = 140.dp),
+                    // 给悬浮的说话键让出落脚空间，最后一段不会被压住。
+                    // 打字时说话键藏起来了，只留一点呼吸空间
+                    .padding(bottom = if (imeVisible) 24.dp else 140.dp),
               ) {
                 // ① 语音：原始那条直接展开，追加的折叠起来。
                 //    原来四条一模一样的「原始语音」排下来，根本分不清谁是谁；
@@ -529,12 +641,72 @@ fun CaptureDetailScreen(captureId: String, onBack: () -> Unit) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Spacer(Modifier.weight(1f))
+                    // 撤销 / 重做：放在日期右边、复制左边，改正文时手边就够得着。
+                    // 误删一大段、自动保存之后也能退回去
+                    if (c.kind != "ask" && draft != null) {
+                        IconButton(
+                            onClick = { draft?.let { cur -> history.undo(cur)?.let { draft = it } } },
+                            enabled = history.canUndo,
+                            modifier = Modifier.size(36.dp),
+                        ) { Icon(painterResource(R.drawable.ic_undo), contentDescription = "撤销",
+                                Modifier.size(20.dp)) }
+                        IconButton(
+                            onClick = { draft?.let { cur -> history.redo(cur)?.let { draft = it } } },
+                            enabled = history.canRedo,
+                            modifier = Modifier.size(36.dp),
+                        ) { Icon(painterResource(R.drawable.ic_redo), contentDescription = "重做",
+                                Modifier.size(20.dp)) }
+                    }
                     if (c.kind == "ask") {
                         CopyButton(turns.joinToString("\n\n") {
                             (if (it.role == "user") "我问：" else "AI：") + it.text
                         })
                     } else {
                         draft?.let { CopyButton(it.text) }
+                    }
+                }
+
+                // 没送出去的录音：存在手机里，一键重试
+                if (failed.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            Modifier.padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            val secs = failed.sumOf { it.durationMs } / 1000
+                            Text(
+                                "有 ${failed.size} 段录音没传上去（共 ${secs / 60}分${secs % 60}秒），已存在手机里",
+                                Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                            )
+                            TextButton(onClick = ::retryFailed, enabled = !retrying) {
+                                Text(if (retrying) "上传中…" else "重试")
+                            }
+                            TextButton(onClick = { confirmDiscard = true }, enabled = !retrying) {
+                                Text("丢弃", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    }
+                }
+
+                // 日记的心情：AI 推断，不对就点一下改
+                if (c.kind == "diary" && draft != null) {
+                    Spacer(Modifier.height(10.dp))
+                    MoodPicker(c.mood, c.moodIsManual) { m ->
+                        capture = c.copy(mood = m, moodIsManual = true)
+                        scope.launch {
+                            try { Api.setMood(captureId, m) }
+                            catch (e: Exception) {
+                                busy = "心情没存上：${e.message?.take(40)}"
+                                load()
+                            }
+                        }
                     }
                 }
 
@@ -552,11 +724,17 @@ fun CaptureDetailScreen(captureId: String, onBack: () -> Unit) {
                     // 直接就能改，不用先点「编辑」——多一步按钮只是碍事
                     BasicTextField(
                         value = draft!!,
-                        onValueChange = { draft = it },
+                        onValueChange = { new ->
+                            draft?.let { history.onEdit(it, new) }
+                            draft = new
+                        },
                         textStyle = MaterialTheme.typography.bodyLarge.copy(
                             color = MaterialTheme.colorScheme.onSurface),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.fillMaxWidth(),
+                        onTextLayout = { textLayout = it },
+                        modifier = Modifier.fillMaxWidth()
+                            .bringIntoViewRequester(cursorBringer)
+                            .onFocusChanged { editorFocused = it.isFocused },
                     )
                     // 日记落款。只是显示，不写进正文 —— 写进去的话
                     // 重新处理一次就会多出第二行落款
@@ -654,6 +832,7 @@ fun CaptureDetailScreen(captureId: String, onBack: () -> Unit) {
                                     if (out.replaceable) {
                                         TextButton(onClick = {
                                             scope.launch {
+                                                draft?.let { history.checkpoint(it) }
                                                 draft = TextFieldValue(
                                                     out.text, TextRange(out.text.length))
                                                 saveNow()
@@ -773,7 +952,9 @@ fun CaptureDetailScreen(captureId: String, onBack: () -> Unit) {
                     AnimatedVisibility(recording, enter = fadeIn(), exit = fadeOut()) {
                         TalkWaveform(levels, Modifier.width(300.dp).height(36.dp))
                     }
-                    TalkButtonWithSlide(
+                    // 打字的时候说话键让开：它浮在最下面，键盘一顶上来正好压在光标那几行上。
+                    // 想接着说话，收起键盘就回来了
+                    if (!imeVisible || recording) TalkButtonWithSlide(
                         recording = recording,
                         // 提问笔记从不锁按钮：它的等待全在对话里显示
                         // 指令的等待感在页面里（占位卡），不压在按钮上
@@ -790,6 +971,23 @@ fun CaptureDetailScreen(captureId: String, onBack: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (confirmDiscard) {
+        AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text("丢弃没传上去的录音？") },
+            text = { Text("这 ${failed.size} 段录音只存在这台手机上，丢弃后找不回来。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    failed.forEach { FailedClips.remove(it) }
+                    failed = FailedClips.list(context, captureId)
+                    confirmDiscard = false
+                    busy = null
+                }) { Text("丢弃", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDiscard = false }) { Text("留着") } },
+        )
     }
 
     if (pickingDate) {
@@ -1100,3 +1298,6 @@ private fun renderMarkdown(src: String): AnnotatedString = buildAnnotatedString 
         append(rest)
     }
 }
+
+/** 转写回来是空的：不是网络问题，录音留着也没用 */
+private class NotHeard : Exception("没听清")

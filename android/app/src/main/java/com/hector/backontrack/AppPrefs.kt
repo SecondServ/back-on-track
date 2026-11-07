@@ -14,6 +14,7 @@ object AppPrefs {
     private const val KEY_AI_PROVIDER = "ai_provider"
     private const val KEY_TASK_SORT = "task_sort"
     private const val KEY_UI_SCALE = "ui_scale"
+    private const val KEY_LAST_TZ = "last_tz"
 
     /** 已完成的待办只显示这么多天内的 —— 再久远的划线条目只会把列表拉长，没有回看价值 */
     const val DONE_KEEP_DAYS = 30
@@ -92,4 +93,8 @@ object AppPrefs {
 
     fun setCaptureSortDesc(ctx: Context, desc: Boolean) =
         prefs(ctx).edit().putBoolean(KEY_SORT_DESC, desc).apply()
+
+    /** 上一次见到的手机时区。跟现在的不一样 = 人换了时区，循环提醒要跟着搬 */
+    fun lastTz(ctx: Context): String? = prefs(ctx).getString(KEY_LAST_TZ, null)
+    fun setLastTz(ctx: Context, tz: String) = prefs(ctx).edit().putString(KEY_LAST_TZ, tz).apply()
 }

@@ -84,6 +84,14 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
+        <!-- 手机时区变了（坐飞机落地）：循环提醒的「几点」跟着人走 -->
+        <receiver
+            android:name=".reminder.TimeZoneReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+        </receiver>
         <receiver
             android:name=".reminder.NudgeReceiver"
             android:exported="false" />

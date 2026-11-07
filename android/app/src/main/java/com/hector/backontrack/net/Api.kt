@@ -29,7 +29,14 @@ data class Capture(
      * 饮食和日记经常隔天补记，用录音时间归位会串日期
      */
     val loggedOn: String? = null,
+    /** 日记的心情：5 开心 / 4 不错 / 3 平和 / 2 低落 / 1 难过。null = 还没判断 */
+    val mood: Int? = null,
+    /** 他亲手改过心情。AI 之后不再覆盖 */
+    val moodIsManual: Boolean = false,
 )
+
+/** 心情折线上的一个点：哪篇日记、算在什么时刻、几档 */
+data class MoodPoint(val id: String, val atMs: Long, val mood: Int?)
 
 /** 记录里追加的一段语音 */
 data class Segment(
@@ -147,6 +154,9 @@ object Api {
         extraHeaders: Map<String, String> = emptyMap(),
         allowRetry: Boolean = true,
     ): String = withContext(Dispatchers.IO) {
+        // 快过期了就先换票，别拿一张注定被拒的票去传一段几 MB 的录音
+        if (allowRetry && tokenExpiresSoon()) refreshOnce(accessToken)
+        val sent = accessToken
         try {
             val c = open(path, method, contentType, extraHeaders)
             body?.let { c.doOutput = true; c.outputStream.use { os -> os.write(it) } }
@@ -154,12 +164,53 @@ object Api {
         } catch (e: ApiException) {
             // access token 只有 1 小时寿命。过期就用 refresh token 换新的再试一次，
             // 否则用户每隔一小时就得重新登录 —— 对天天用的工具是不可接受的。
-            if (allowRetry && e.message?.startsWith("HTTP 401") == true && refreshSession()) {
+            //
+            // 不能只认 401：数据库接口过期回 401，但**存录音的 Storage 回 403**
+            // （有的版本是 400 + "exp claim"）。以前只认 401，于是隔了一小时再录的
+            // 长日记一上传就 403，录音跟着被删 —— 「说了半天全丢了」就是这么来的。
+            if (allowRetry && isAuthFailure(e) && refreshOnce(sent)) {
                 val c2 = open(path, method, contentType, extraHeaders)
                 body?.let { c2.doOutput = true; c2.outputStream.use { os -> os.write(it) } }
                 c2.finish()
             } else throw e
         }
+    }
+
+    /** 票过期的几种样子：401、Storage 的 403、以及 400 但正文里写着 jwt / exp */
+    private fun isAuthFailure(e: ApiException): Boolean {
+        val m = e.message ?: return false
+        if (m.startsWith("HTTP 401") || m.startsWith("HTTP 403")) return true
+        return m.startsWith("HTTP 400") &&
+            (m.contains("jwt", ignoreCase = true) || m.contains("\"exp\""))
+    }
+
+    /** access token 还剩不到 1 分钟（或已过期）。解不开就当没过期，交给失败重试兜底 */
+    private fun tokenExpiresSoon(): Boolean {
+        val t = accessToken ?: return false
+        if (refreshToken == null) return false
+        return try {
+            val part = t.split('.').getOrNull(1) ?: return false
+            val json = String(android.util.Base64.decode(part,
+                android.util.Base64.URL_SAFE or android.util.Base64.NO_PADDING or
+                    android.util.Base64.NO_WRAP))
+            val exp = JSONObject(json).optLong("exp", 0L)
+            exp > 0 && exp * 1000 - System.currentTimeMillis() < 60_000
+        } catch (_: Exception) { false }
+    }
+
+    private val refreshLock = Any()
+
+    /**
+     * 换票，但同一时刻只换一次。
+     *
+     * refresh token 是一次性的：几个请求同时发现过期、各自去换，
+     * 后到的那几个拿的是已经作废的旧票，会被服务端拒掉。
+     * 所以排队，进来先看一眼：别人已经换过了（票变了）就直接用新的。
+     */
+    private fun refreshOnce(seen: String?): Boolean = synchronized(refreshLock) {
+        val now = accessToken
+        if (now != null && now != seen) return true
+        refreshSession()
     }
 
     /** 用 refresh token 换一套新的。成功返回 true */
@@ -316,7 +367,7 @@ object Api {
 
     private const val CAPTURE_FIELDS =
         "id,summary,corrected_text,final_text,kind,asr_status,asr_error,audio_path," +
-            "created_at,deleted_at,logged_on"
+            "created_at,deleted_at,logged_on,mood,mood_is_manual"
 
     private fun parseCaptures(body: String): List<Capture> {
         val arr = JSONArray(body)
@@ -335,6 +386,8 @@ object Api {
                 createdAt = o.getString("created_at"),
                 deletedAt = str("deleted_at"),
                 loggedOn = str("logged_on"),
+                mood = if (o.isNull("mood") || !o.has("mood")) null else o.getInt("mood"),
+                moodIsManual = o.optBoolean("mood_is_manual", false),
             )
         }
     }
@@ -366,6 +419,54 @@ object Api {
         request("/rest/v1/captures?id=eq.$captureId", "PATCH",
             JSONObject().put("logged_on", date ?: JSONObject.NULL)
                 .toString().toByteArray())
+    }
+
+    /** 他亲手改心情。打上 mood_is_manual，AI 之后不再覆盖 */
+    suspend fun setMood(captureId: String, mood: Int) {
+        request("/rest/v1/captures?id=eq.$captureId", "PATCH",
+            JSONObject().put("mood", mood).put("mood_is_manual", true)
+                .toString().toByteArray())
+    }
+
+    /** 让服务端给这几篇日记（重新）推断心情。改过心情的那几篇服务端会跳过 */
+    suspend fun inferMoods(ids: List<String>) {
+        if (ids.isEmpty()) return
+        request("/functions/v1/diary-mood", "POST",
+            JSONObject().put("ids", JSONArray(ids)).toString().toByteArray())
+    }
+
+    /**
+     * 某个月（yyyy-MM）每篇日记的心情，按时间排好。
+     *
+     * 时间点用「这篇说的是哪天」：补记昨天的日记算在昨天中午，
+     * 否则就是录音那一刻 —— 一天记好几篇时，折线就会在那天里上下起伏。
+     */
+    suspend fun listDiaryMoods(month: String): List<MoodPoint> {
+        val (y, m) = month.split("-").map { it.toInt() }
+        val tz = java.util.TimeZone.getDefault()
+        val cal = java.util.Calendar.getInstance(tz).apply {
+            clear(); set(y, m - 1, 1)
+        }
+        val start = cal.timeInMillis
+        cal.add(java.util.Calendar.MONTH, 1)
+        val end = cal.timeInMillis
+        val iso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
+            .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+        // 前后各多拿几天：补记的日记录音时间可能在下个月初
+        val arr = JSONArray(request(
+            "/rest/v1/captures?kind=eq.diary&deleted_at=is.null" +
+                "&created_at=gte.${iso.format(java.util.Date(start - 3 * 86400000L))}" +
+                "&created_at=lt.${iso.format(java.util.Date(end + 3 * 86400000L))}" +
+                "&select=id,created_at,logged_on,mood&order=created_at", "GET"))
+        val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+            .apply { timeZone = tz }
+        return (0 until arr.length()).mapNotNull { i ->
+            val o = arr.getJSONObject(i)
+            val at = if (o.isNull("logged_on")) parseIso(o.getString("created_at"))
+                     else (day.parse(o.getString("logged_on"))?.time ?: 0L) + 12 * 3600_000L
+            if (at < start || at >= end) return@mapNotNull null
+            MoodPoint(o.getString("id"), at, if (o.isNull("mood")) null else o.getInt("mood"))
+        }.sortedBy { it.atMs }
     }
 
     suspend fun setCaptureKind(capture: Capture, kind: String) {
@@ -790,6 +891,24 @@ object Api {
         if (dueAtIso != null) patch.put("due_at", dueAtIso)
         request("/rest/v1/tasks?id=eq.${task.id}", "PATCH", patch.toString().toByteArray())
         rescheduleTask(task.id)
+    }
+
+    /**
+     * 手机从 fromTz 换到了现在的时区：把所有还开着的循环待办的「几点」搬过来。
+     * 「每天晚上 10 点」到了上海就是上海的 10 点。一次性待办不动。
+     */
+    suspend fun followTimeZone(fromTz: String): Int {
+        val arr = JSONArray(request(
+            "/rest/v1/tasks?status=eq.open&recur_kind=not.is.null&deleted_at=is.null" +
+                "&due_at=not.is.null&select=id", "GET"))
+        val tz = java.util.TimeZone.getDefault().id
+        for (i in 0 until arr.length()) {
+            request("/functions/v1/reschedule-task", "POST",
+                JSONObject().put("task_id", arr.getJSONObject(i).getString("id"))
+                    .put("tz", tz).put("from_tz", fromTz)
+                    .toString().toByteArray())
+        }
+        return arr.length()
     }
 
     /**
