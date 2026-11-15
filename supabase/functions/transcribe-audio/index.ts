@@ -5,7 +5,7 @@
 // 传音频，还文字，什么都不写。将来别的地方要语音输入也用它。
 import { cleanText } from "../_shared/analysis.ts";
 import { transcribe, type AsrProvider } from "../_shared/asr.ts";
-import { asrHint, loadProfile, routeOf } from "../_shared/profile.ts";
+import { asrHint, loadProfile, profileForLLM, routeOf } from "../_shared/profile.ts";
 
 const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
       routeOf(profile),
     );
     if (!raw?.trim()) return json({ error: "empty_transcript" }, 500);
-    return json({ ok: true, text: await cleanText(raw, profile?.body, routeOf(profile)) });
+    return json({ ok: true, text: await cleanText(raw, profileForLLM(profile), routeOf(profile)) });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }

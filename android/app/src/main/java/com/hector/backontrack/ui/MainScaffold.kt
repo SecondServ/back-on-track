@@ -41,6 +41,7 @@ private sealed interface Screen {
     data object Settings : Screen
     data object Trash : Screen
     data object Profile : Screen
+    data object Terms : Screen
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -185,7 +186,7 @@ fun MainScaffold(onSignOut: () -> Unit, startOnTasks: Boolean = false) {
             is Screen.TaskDetail -> { screen = lastTab; reloadKey++ }
             is Screen.RecapDetail -> screen = Screen.Recap
             is Screen.Recap -> screen = Screen.Captures
-            is Screen.Trash, is Screen.Profile -> screen = Screen.Settings
+            is Screen.Trash, is Screen.Profile, is Screen.Terms -> screen = Screen.Settings
             is Screen.Settings -> screen = lastTab
             is Screen.Tasks -> screen = Screen.Captures
             else -> Unit
@@ -214,11 +215,17 @@ fun MainScaffold(onSignOut: () -> Unit, startOnTasks: Boolean = false) {
             onSignOut = onSignOut,
             onOpenTrash = { screen = Screen.Trash },
             onOpenProfile = { screen = Screen.Profile },
+            onOpenTerms = { screen = Screen.Terms },
         )
         return
     }
     if (screen is Screen.Trash) {
         TrashScreen(onBack = { screen = Screen.Settings })
+        return
+    }
+
+    if (screen is Screen.Terms) {
+        TermsScreen(onBack = { screen = Screen.Settings })
         return
     }
 

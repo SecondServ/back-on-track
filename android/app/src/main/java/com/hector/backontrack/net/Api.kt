@@ -35,6 +35,31 @@ data class Capture(
     val moodIsManual: Boolean = false,
 )
 
+/**
+ * 「名词校对」里的一条：AI 从日记里挑出来、等他确认写法的词。
+ * heard 是日记里实际转出来的样子，term 是标准写法（AI 先猜，他确认或改过之后为准）。
+ */
+data class GlossaryTerm(
+    val id: String,
+    val term: String,
+    val heard: String?,
+    /** person 人 / place 地方 / other 事物 */
+    val category: String,
+    /** 出现时的那一句，帮他想起说的是谁 */
+    val context: String?,
+    /** pending 待确认 / confirmed 已确认 */
+    val status: String,
+    /** 全名 / 正式名称，可以不填 */
+    val fullName: String? = null,
+    /** 跟他的关系、或者一句说明，可以不填 */
+    val relation: String? = null,
+    /** 关系是 AI 从日记里摘的，他还没看过 */
+    val relationIsGuess: Boolean = false,
+)
+
+/** 扫一批旧日记的结果：这批扫了几篇、加了几个词、还剩几篇 */
+data class ScanProgress(val scanned: Int, val failed: Int, val found: Int, val remaining: Int)
+
 /** 心情折线上的一个点：哪篇日记、算在什么时刻、几档 */
 data class MoodPoint(val id: String, val atMs: Long, val mood: Int?)
 
@@ -419,6 +444,84 @@ object Api {
         request("/rest/v1/captures?id=eq.$captureId", "PATCH",
             JSONObject().put("logged_on", date ?: JSONObject.NULL)
                 .toString().toByteArray())
+    }
+
+    // ── 名词校对 ─────────────────────────────────────────────────────────
+
+    /** 待确认的和已确认的。忽略掉的不列 */
+    suspend fun listTerms(): List<GlossaryTerm> {
+        val arr = JSONArray(request(
+            "/rest/v1/glossary_terms?status=in.(pending,confirmed)" +
+                "&select=id,term,heard,category,context,status,full_name,relation,relation_is_guess" +
+                "&order=created_at.desc&limit=500",
+            "GET"))
+        return (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            fun str(k: String) = if (o.isNull(k)) null else o.getString(k)
+            GlossaryTerm(o.getString("id"), o.getString("term"), str("heard"),
+                o.optString("category", "other"), str("context"), o.getString("status"),
+                str("full_name"), str("relation"), o.optBoolean("relation_is_guess", false))
+        }
+    }
+
+    /**
+     * 确认 / 修改一条：写法、类别、全名、关系一起存。
+     * 经他手存过的关系就不再算「AI 猜的」。
+     */
+    suspend fun confirmTerms(
+        ids: List<String>, term: String, category: String, fullName: String?, relation: String?,
+    ) {
+        if (ids.isEmpty()) return
+        request("/rest/v1/glossary_terms?id=in.(${ids.joinToString(",")})", "PATCH",
+            JSONObject().put("term", term).put("category", category)
+                .put("full_name", fullName ?: JSONObject.NULL)
+                .put("relation", relation ?: JSONObject.NULL)
+                .put("relation_is_guess", false)
+                .put("status", "confirmed")
+                .put("confirmed_at", isoNow()).toString().toByteArray())
+    }
+
+    /** 手动往通讯录里加一条，直接算确认过的 */
+    suspend fun addTerm(term: String, category: String, fullName: String?, relation: String?) {
+        request("/rest/v1/glossary_terms", "POST",
+            JSONObject().put("term", term).put("heard", term).put("category", category)
+                .put("full_name", fullName ?: JSONObject.NULL)
+                .put("relation", relation ?: JSONObject.NULL)
+                .put("status", "confirmed")
+                .put("confirmed_at", isoNow()).toString().toByteArray())
+    }
+
+    /** 扫一批还没扫过的旧日记。调用方循环调，直到 remaining 为 0 */
+    suspend fun scanOldDiaries(): ScanProgress {
+        val o = JSONObject(request("/functions/v1/scan-terms", "POST", "{}".toByteArray()))
+        return ScanProgress(o.optInt("scanned"), o.optInt("failed"),
+            o.optInt("found"), o.optInt("remaining"))
+    }
+
+    /** 还有几篇日记没扫过名词 */
+    suspend fun countUnscannedDiaries(): Int {
+        val arr = JSONArray(request(
+            "/rest/v1/captures?kind=eq.diary&terms_scanned_at=is.null&select=id&limit=1000", "GET"))
+        return arr.length()
+    }
+
+    /** 不是需要记住的词。留着记录，免得下次又被 AI 报出来 */
+    suspend fun ignoreTerms(ids: List<String>) {
+        if (ids.isEmpty()) return
+        request("/rest/v1/glossary_terms?id=in.(${ids.joinToString(",")})", "PATCH",
+            JSONObject().put("status", "ignored").toString().toByteArray())
+    }
+
+    /** 把一个写法从合并的卡片里拆出去：按它自己的样子单独待确认 */
+    suspend fun splitTerm(id: String, term: String) {
+        request("/rest/v1/glossary_terms?id=eq.$id", "PATCH",
+            JSONObject().put("term", term).toString().toByteArray())
+    }
+
+    /** 从已确认里删掉：以后转写不再按它纠正 */
+    suspend fun deleteTerms(ids: List<String>) {
+        if (ids.isEmpty()) return
+        request("/rest/v1/glossary_terms?id=in.(${ids.joinToString(",")})", "DELETE")
     }
 
     /** 他亲手改心情。打上 mood_is_manual，AI 之后不再覆盖 */

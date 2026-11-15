@@ -24,6 +24,7 @@ fun SettingsScreen(
     onSignOut: () -> Unit,
     onOpenTrash: () -> Unit,
     onOpenProfile: () -> Unit,
+    onOpenTerms: () -> Unit,
 ) {
     val context = LocalContext.current
     var hideDone by remember { mutableStateOf(AppPrefs.hideCompletedTasks(context)) }
@@ -32,6 +33,11 @@ fun SettingsScreen(
     var route by remember { mutableStateOf<String?>(null) }
     var routeErr by remember { mutableStateOf<String?>(null) }
     var confirmSignOut by remember { mutableStateOf(false) }
+    // 「名词校对」里有几个等确认。null = 还没读到
+    var pendingTerms by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(Unit) {
+        pendingTerms = runCatching { Api.listTerms().count { it.status == "pending" } }.getOrNull()
+    }
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
@@ -67,6 +73,20 @@ fun SettingsScreen(
                 },
                 trailingContent = { Text("›", style = MaterialTheme.typography.titleLarge) },
                 modifier = Modifier.clickable { onOpenProfile() },
+            )
+            ListItem(
+                headlineContent = { Text("通讯录") },
+                supportingContent = {
+                    val n = pendingTerms ?: 0
+                    Text(
+                        if (n > 0) "有 $n 个词等你确认"
+                        else "你生活里的人、地方和事物。AI 从日记里挑，你来确认",
+                        color = if (n > 0) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+                trailingContent = { Text("›", style = MaterialTheme.typography.titleLarge) },
+                modifier = Modifier.clickable { onOpenTerms() },
             )
 
             ListItem(

@@ -9,7 +9,8 @@
 
 import { analyze } from "../_shared/analysis.ts";
 import { transcribe, type AsrProvider } from "../_shared/asr.ts";
-import { asrHint, loadProfile, routeOf } from "../_shared/profile.ts";
+import { asrHint, loadProfile, profileForLLM, routeOf } from "../_shared/profile.ts";
+import { inBackground, scanTerms } from "../_shared/terms.ts";
 import { planReminders } from "../_shared/reminders.ts";
 import { dateLabel, formatMeal, localDateIso } from "../_shared/meal.ts";
 import type { MealEntry } from "../_shared/meal.ts";
@@ -95,7 +96,7 @@ Deno.serve(async (req) => {
     const forcedKind = capture.kind_is_manual ? capture.kind : undefined;
     const a = await analyze({
       transcript, now: new Date().toISOString(), tz, forcedKind,
-      profile: profile?.body,
+      profile: profileForLLM(profile),
       route: routeOf(profile),
     });
     mark("分析完成");
@@ -133,6 +134,14 @@ Deno.serve(async (req) => {
         `${SUPA_URL}/rest/v1/captures?id=eq.${capture_id}&mood_is_manual=is.false`,
         { method: "PATCH", headers: JH, body: JSON.stringify({ mood: a.mood }) },
       );
+    }
+
+    // 日记：后台扫一遍人名、地名、少见词，放进「名词校对」等他确认。不拖慢这次保存
+    if (a.kind === "diary") {
+      inBackground(scanTerms({
+        supaUrl: SUPA_URL, headers: H, userId: user.id, captureId: capture_id,
+        text: a.corrected_text, profile, route: routeOf(profile),
+      }));
     }
 
     // 多出来的那几天：各建一条独立的饮食笔记，挂同一段录音

@@ -6,7 +6,8 @@
 
 import { cleanText } from "../_shared/analysis.ts";
 import { transcribe, type AsrProvider } from "../_shared/asr.ts";
-import { asrHint, loadProfile, routeOf } from "../_shared/profile.ts";
+import { asrHint, loadProfile, profileForLLM, routeOf } from "../_shared/profile.ts";
+import { inBackground, scanTerms } from "../_shared/terms.ts";
 
 const SUPA_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -62,8 +63,21 @@ Deno.serve(async (req) => {
     );
     if (!raw?.trim()) throw new Error("empty_transcript");
 
-    const cleaned = await cleanText(raw, profile?.body, routeOf(profile));
+    const cleaned = await cleanText(raw, profileForLLM(profile), routeOf(profile));
     await patchSegment({ final_text: raw, corrected_text: cleaned, asr_status: "done" });
+
+    // 往日记里追加的这一段也扫一遍名词。后台跑，不耽误把文字交还给客户端
+    const kr = await fetch(
+      `${SUPA_URL}/rest/v1/captures?id=eq.${capture_id}&select=kind`, { headers: H });
+    const [cap] = kr.ok ? await kr.json() : [];
+    if (cap?.kind === "diary") {
+      inBackground(scanTerms({
+        supaUrl: SUPA_URL, headers: H, userId: user.id, captureId: capture_id,
+        text: cleaned, profile, route: routeOf(profile),
+        // 只扫了追加的这一段，整篇不算扫过
+        markScanned: false,
+      }));
+    }
 
     // 只把这一段存好并交还文字，**不改 captures 的正文**。
     // 插在哪里由客户端决定 —— 只有它知道光标在哪；
