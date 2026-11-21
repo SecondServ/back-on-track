@@ -20,8 +20,10 @@ Deno.serve(async (req) => {
   const JH = { ...H, "Content-Type": "application/json" };
 
   // advance = 用户刚完成了这一次，滚到下一次
+  // occurrence = 他完成的是哪一次（那一次的 due_at）。闹钟响的那一刻手机已经自动滚过一次了，
+  //   之后他再点「完成」，不能再往后滚 —— 不然明天那次就被白白跳过
   // from_tz = 手机刚从这个时区换到 tz：循环待办的「几点」跟着人走
-  const { task_id, tz, advance, from_tz } = await req.json().catch(() => ({}));
+  const { task_id, tz, advance, occurrence, from_tz } = await req.json().catch(() => ({}));
   if (!task_id) return json({ error: "missing_task_id" }, 400);
 
   const tr = await fetch(
@@ -52,7 +54,9 @@ Deno.serve(async (req) => {
     // 换了时区：先把「原来那边的晚上 10 点」搬成「这边的晚上 10 点」，再往后推。
     // 一次性待办不搬 —— 它通常绑着某地的真实时刻（洛杉矶的看诊预约），挪了反而误事
     if (from_tz && from_tz !== zone) dueAt = shiftWallClock(dueAt, from_tz, zone);
-    dueAt = advance
+    const alreadyPast = typeof occurrence === "string" &&
+      new Date(dueAt!).getTime() > new Date(occurrence).getTime() + 60_000;
+    dueAt = advance && !alreadyPast
       ? (nextOccurrence(dueAt!, rec, zone) ?? dueAt)
       : catchUp(dueAt!, rec, zone);
     if (dueAt !== task.due_at) {

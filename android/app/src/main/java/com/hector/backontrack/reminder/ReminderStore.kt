@@ -19,6 +19,8 @@ data class PendingReminder(
      * 服务端根本不知道它存在，所以同步时**不能**按「服务端没返回 = 已废弃」把它取消。
      */
     val local: Boolean = false,
+    /** 这条提醒对应的 deadline。循环待办点「完成」时告诉服务端完成的是哪一次；0 = 不知道 */
+    val dueAtMs: Long = 0L,
 )
 
 /**
@@ -42,7 +44,8 @@ object ReminderStore {
                 .put("id", it.id).put("task_id", it.taskId)
                 .put("title", it.title).put("body", it.body)
                 .put("fire_at_ms", it.fireAtMs).put("style", it.style)
-                .put("recurring", it.recurring).put("local", it.local))
+                .put("recurring", it.recurring).put("local", it.local)
+                .put("due_at_ms", it.dueAtMs))
         }
         prefs(ctx).edit().putString(KEY, arr.toString()).apply()
     }
@@ -60,6 +63,7 @@ object ReminderStore {
                 style = o.optString("style", "notify"),
                 recurring = o.optBoolean("recurring", false),
                 local = o.optBoolean("local", false),
+                dueAtMs = o.optLong("due_at_ms", 0L),
             )
         }
     } catch (_: Exception) { emptyList() }

@@ -324,6 +324,9 @@ private fun TasksRecap(d: JSONObject, month: String) {
 
     MoodSection(month)
 
+    // 循环待办每天打没打卡。直接读打卡记录，不走回顾缓存 —— 刚打的卡马上就该画上
+    CheckinSection(month) { Section(it) }
+
     val calArr = d.optJSONArray("calendar")
     if (calArr != null && calArr.length() > 0) {
         Section("这个月的日历")

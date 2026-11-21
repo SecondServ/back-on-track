@@ -94,6 +94,12 @@ private fun buildChecks(
         fix = { openSettings(ReminderScheduler.exactAlarmSettingsIntent()) },
     ),
     Check(
+        label = "全屏闹钟",
+        ok = ReminderScheduler.canUseFullScreen(ctx),
+        why = "没有它，熄屏时闹钟只会是一条通知，不会亮屏弹出来",
+        fix = { openSettings(ReminderScheduler.fullScreenSettingsIntent(ctx)) },
+    ),
+    Check(
         label = "不受电池优化限制",
         ok = ReminderScheduler.isIgnoringBatteryOptimizations(ctx),
         why = "开着省电限制时，手机休眠中的提醒可能整个被跳过",

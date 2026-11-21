@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
+import androidx.compose.ui.res.painterResource
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -228,7 +229,7 @@ fun TaskListScreen(
                 try {
                     // 跟闹钟上点「已完成」走同一条路，日志才不会缺口
                     Api.logOccurrence(t.id, "done")
-                    Api.advanceRecurring(t.id)
+                    Api.advanceRecurring(t.id, t.dueAt?.let { runCatching { java.time.OffsetDateTime.parse(it).toInstant().toEpochMilli() }.getOrNull() })
                     ReminderScheduler.syncFromServer(context)
                 } catch (_: Exception) {}
                 load()
@@ -546,12 +547,23 @@ private fun TaskRow(
                     }
                     recurLabel(task)?.let {
                         Spacer(Modifier.width(8.dp))
-                        Text("🔁 $it", style = MaterialTheme.typography.labelSmall,
+                        Icon(
+                            painterResource(com.hector.backontrack.R.drawable.ic_repeat), null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(13.dp),
+                        )
+                        Spacer(Modifier.width(2.dp))
+                        Text(it, style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary)
                     }
                     if (onOpenSource != null) {
                         Spacer(Modifier.width(8.dp))
-                        Text("🎙", style = MaterialTheme.typography.labelSmall)
+                        // 有原始录音，点卡片能跳过去
+                        Icon(
+                            painterResource(com.hector.backontrack.R.drawable.ic_tab_mic), "有录音",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(13.dp),
+                        )
                     }
                 }
                 // 什么时候记下来的 —— 单独一行，免得跟截止时间挤在一起看串
@@ -583,10 +595,14 @@ private fun TaskRow(
             if (!isDone) {
                 // 铃铛：开 = 到点响，关 = 只是记一下
                 IconButton(onClick = onToggleReminder) {
-                    Text(
-                        if (task.wantsReminder) "🔔" else "🔕",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.alpha(if (task.wantsReminder) 1f else 0.4f),
+                    Icon(
+                        painterResource(
+                            if (task.wantsReminder) com.hector.backontrack.R.drawable.ic_bell
+                            else com.hector.backontrack.R.drawable.ic_bell_off),
+                        contentDescription = if (task.wantsReminder) "到点提醒：开" else "到点提醒：关",
+                        tint = if (task.wantsReminder) MaterialTheme.colorScheme.primary
+                               else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                        modifier = Modifier.size(22.dp),
                     )
                 }
                 // 没有时间点就没什么可推迟的

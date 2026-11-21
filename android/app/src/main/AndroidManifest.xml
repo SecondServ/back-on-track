@@ -24,6 +24,8 @@
     <!-- 夜里重算回顾要跑一两分钟，广播接收器的十秒预算不够，得走前台服务 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- 到点闹钟的铃声由前台服务放，不依赖全屏界面有没有弹出来 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
@@ -95,6 +97,10 @@
         <receiver
             android:name=".reminder.NudgeReceiver"
             android:exported="false" />
+        <!-- 闹钟通知上的「完成 / 推迟 / 跳过」按钮 -->
+        <receiver
+            android:name=".reminder.AlarmActionReceiver"
+            android:exported="false" />
 
         <!-- 桌面小组件。exported=false：系统是按组件名直接投递的，不用对外开放 -->
         <receiver
@@ -114,6 +120,12 @@
             android:exported="false"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- 到点闹钟响铃 -->
+        <service
+            android:name=".reminder.AlarmService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false" />
 
         <service
             android:name=".reminder.RecapService"

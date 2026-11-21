@@ -89,6 +89,9 @@ data class NoteOutput(
 /** 循环待办的一次打卡：某个时间点上完成了还是跳过了 */
 data class Occurrence(val occurredAt: String, val outcome: String)
 
+/** 一条循环待办在某个月里的打卡：(发生时刻毫秒, done / skipped) */
+data class Checkins(val task: Task, val records: List<Pair<Long, String>>)
+
 /** 用户档案：body 给 LLM 当背景，glossary 给 ASR 当听写提示 */
 data class Profile(
     val body: String,
@@ -610,7 +613,7 @@ object Api {
 
         // PostgREST 的内嵌查询：一次把 task 的标题带出来，省一次往返
         val body = request(
-            "/rest/v1/reminders?select=id,task_id,fire_at,body,style,tasks(title,status,recur_kind)" +
+            "/rest/v1/reminders?select=id,task_id,fire_at,body,style,tasks(title,status,recur_kind,due_at)" +
                 "&delivered_at=is.null&fire_at=gte.$nowIso&order=fire_at", "GET")
 
         val arr = JSONArray(body)
@@ -627,6 +630,7 @@ object Api {
                 fireAtMs = parseIso(o.getString("fire_at")),
                 style = o.optString("style", "notify"),
                 recurring = !task.isNull("recur_kind"),
+                dueAtMs = if (task.isNull("due_at")) 0L else parseIso(task.getString("due_at")),
             )
         }
     }
@@ -642,6 +646,33 @@ object Api {
                 .put("occurred_at", isoNow())
                 .put("outcome", outcome)
         ).toString().toByteArray())
+    }
+
+    /**
+     * 回顾页的打卡图：某个月（yyyy-MM）每条循环待办的打卡记录。
+     * 记录按发生时刻（毫秒）给出，图上按手机当地日期归到哪一天。
+     */
+    suspend fun recurringCheckins(month: String): List<Checkins> {
+        val (y, m) = month.split("-").map { it.toInt() }
+        val cal = java.util.Calendar.getInstance().apply { clear(); set(y, m - 1, 1) }
+        val from = cal.timeInMillis
+        cal.add(java.util.Calendar.MONTH, 1)
+        val to = cal.timeInMillis
+        val tasks = parseTasks(request(
+            "/rest/v1/tasks?select=$TASK_FIELDS&recur_kind=not.is.null&deleted_at=is.null" +
+                "&order=created_at.asc&limit=50", "GET"))
+        if (tasks.isEmpty()) return emptyList()
+        val arr = JSONArray(request(
+            "/rest/v1/task_occurrences?task_id=in.(${tasks.joinToString(",") { it.id }})" +
+                "&occurred_at=gte.${isoOf(from)}&occurred_at=lt.${isoOf(to)}" +
+                "&select=task_id,outcome,occurred_at&order=occurred_at&limit=1000", "GET"))
+        val byTask = HashMap<String, MutableList<Pair<Long, String>>>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            byTask.getOrPut(o.getString("task_id")) { mutableListOf() }
+                .add(parseIso(o.getString("occurred_at")) to o.getString("outcome"))
+        }
+        return tasks.map { Checkins(it, byTask[it.id].orEmpty()) }
     }
 
     /** 一次把多条循环待办最近的结果拉回来，按任务分组 */
@@ -1018,14 +1049,29 @@ object Api {
      * 循环待办完成了这一次：让服务端把 due_at 滚到下一次，并重排提醒。
      * 它不进「已完成」—— 下周还要做的事，划掉了反而找不着。
      */
-    suspend fun advanceRecurring(taskId: String) {
-        request(
-            "/functions/v1/reschedule-task", "POST",
-            JSONObject().put("task_id", taskId).put("advance", true)
-                .put("tz", java.util.TimeZone.getDefault().id)
-                .toString().toByteArray(),
-        )
+    suspend fun advanceRecurring(taskId: String, occurrenceMs: Long?) {
+        val body = JSONObject().put("task_id", taskId).put("advance", true)
+            .put("tz", java.util.TimeZone.getDefault().id)
+        // 完成的是哪一次。闹钟响时已经自动滚过一次的话，服务端看到这个就不会再多滚
+        if (occurrenceMs != null) body.put("occurrence", isoOf(occurrenceMs))
+        request("/functions/v1/reschedule-task", "POST", body.toString().toByteArray())
     }
+
+    /**
+     * 「下一次」已经过去了的循环待办：让服务端滚到下一个还没到的时间点，重排提醒。
+     * 每次同步提醒前跑一遍 —— 那次闹钟没人处理、或者响的时候没网，靠这里补上。
+     */
+    suspend fun catchUpRecurring(): Int {
+        val arr = JSONArray(request(
+            "/rest/v1/tasks?status=eq.open&recur_kind=not.is.null&deleted_at=is.null" +
+                "&due_at=lt.${isoOf(System.currentTimeMillis())}&select=id", "GET"))
+        for (i in 0 until arr.length()) rescheduleTask(arr.getJSONObject(i).getString("id"))
+        return arr.length()
+    }
+
+    private fun isoOf(ms: Long): String = java.text.SimpleDateFormat(
+        "yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US
+    ).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date(ms))
 
     /** 服务端按这条待办当前的 deadline 重排提醒（撤掉没发出的旧提醒） */
     suspend fun rescheduleTask(taskId: String) {
